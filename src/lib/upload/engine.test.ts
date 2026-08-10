@@ -186,4 +186,37 @@ describe("UploadEngine", () => {
     // New session + fresh URL (sessionId reset on retry)
     expect(provider.calls).toContain("create");
   });
+
+  test("re-adding the same preferredId never replaces or restarts the live task", async () => {
+    const provider = new MockProvider();
+    const engine = new UploadEngine(provider, "proj-1");
+    const first = engine.addFile(makeFile(), null, "stable-id");
+    // Duplicate call with the same id (StrictMode double-effect / racing
+    // auto-resume read) — must be a no-op, not a restart.
+    const second = engine.addFile(makeFile(), null, "stable-id");
+    expect(second).toBe(first);
+    await waitForTerminal(engine);
+    const tasks = engine.getTasks();
+    expect(tasks.filter((t) => t.id === "stable-id").length).toBe(1);
+    expect(tasks.find((t) => t.id === "stable-id")?.phase).toBe("done");
+    // Exactly one full pipeline ran.
+    expect(provider.calls.filter((c) => c.startsWith("create")).length).toBe(1);
+    expect(provider.completed.length).toBe(1);
+  });
+
+  test("never attaches a second task to a session an active task owns", async () => {
+    const provider = new MockProvider();
+    provider.hang = true;
+    const engine = new UploadEngine(provider, "proj-1");
+    const first = engine.addFile(makeFile(), "resume-session");
+    const second = engine.addFile(makeFile(), "resume-session");
+    expect(second).toBe(first);
+    await new Promise((r) => setTimeout(r, 50));
+    engine.cancel(first);
+    await waitForTerminal(engine);
+    expect(engine.getTasks().filter((t) => t.sessionId === "resume-session").length).toBe(1);
+    // No duplicate session creation / completion.
+    expect(provider.calls.filter((c) => c.startsWith("fresh:")).length).toBeLessThanOrEqual(1);
+    expect(provider.completed.length).toBe(0);
+  });
 });

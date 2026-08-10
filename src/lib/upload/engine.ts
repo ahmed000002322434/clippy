@@ -109,11 +109,34 @@ export class UploadEngine {
    * `preferredId` is used when re-attaching an upload restored from
    * IndexedDB so the persisted record key (and preview URL) stays stable
    * across refreshes.
+   *
+   * Idempotent by design: calling this twice with the same `preferredId`
+   * (e.g. a StrictMode double-effect or a racing auto-resume read) never
+   * replaces or restarts an existing task, and a second task is never
+   * attached to a session another active task already owns.
    */
   addFile(file: File, existingSessionId?: string | null, preferredId?: string) {
     const id =
       preferredId ??
       `up-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Same id already known — return it without touching the live task.
+    if (preferredId && this.tasks.has(preferredId)) {
+      return preferredId;
+    }
+
+    // Never double-attach a session that an active task already owns.
+    if (existingSessionId) {
+      const owner = Array.from(this.tasks.values()).find(
+        (t) =>
+          t.sessionId === existingSessionId &&
+          t.phase !== "done" &&
+          t.phase !== "error" &&
+          t.phase !== "cancelled",
+      );
+      if (owner) return owner.id;
+    }
+
     const task: UploadTask = {
       id,
       sessionId: existingSessionId ?? null,
@@ -139,6 +162,16 @@ export class UploadEngine {
   private async run(id: string) {
     const task = this.tasks.get(id);
     if (!task) return;
+    // Re-entry guard: a second pipeline must never run for a task that is
+    // already mid-flight (validating is fine — it is the fresh-start state
+    // used by both addFile and retry).
+    if (
+      task.phase === "creating-session" ||
+      task.phase === "uploading" ||
+      task.phase === "finalizing"
+    ) {
+      return;
+    }
     const signal = task.controller.signal;
 
     try {

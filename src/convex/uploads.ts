@@ -102,6 +102,9 @@ export const markUploading = mutation({
     if (userId === null) throw new Error("Not authenticated");
     const session = await ctx.db.get(args.sessionId);
     if (!session || session.userId !== userId) throw new Error("Not found");
+    // Straggler-proof: a late/duplicate worker must never clobber a session
+    // that already completed (its video is stored and returned idempotently).
+    if (session.status === "completed" || session.status === "cancelled") return;
     await ctx.db.patch(args.sessionId, {
       status: "uploading",
       attempts: session.attempts + 1,
@@ -228,6 +231,8 @@ export const failUploadSession = mutation({
     if (userId === null) throw new Error("Not authenticated");
     const session = await ctx.db.get(args.sessionId);
     if (!session || session.userId !== userId) throw new Error("Not found");
+    // Never downgrade a completed/cancelled session — the video exists.
+    if (session.status === "completed" || session.status === "cancelled") return;
     await ctx.db.patch(args.sessionId, {
       status: "failed",
       error: args.error,

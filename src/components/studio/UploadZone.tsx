@@ -83,6 +83,11 @@ function isRecoverable(s: {
   );
 }
 
+/** Sessions that are genuinely mid-flight and safe to auto-resume. */
+function isMidflight(s: { status: string }): boolean {
+  return s.status === "created" || s.status === "uploading";
+}
+
 function phaseLabel(task: UploadTask): string {
   switch (task.phase) {
     case "validating":
@@ -92,7 +97,7 @@ function phaseLabel(task: UploadTask): string {
     case "uploading":
       return `${formatBytes(task.bytesUploaded)} / ${formatBytes(task.bytesTotal)} · ${formatSpeed(task.speedBps)}${
         formatEta(task.etaMs) ? ` · ${formatEta(task.etaMs)} left` : ""
-      }`;
+      }${task.attempts > 1 ? ` · retrying (${task.attempts - 1}/3)` : ""}`;
     case "finalizing":
       return "Saving…";
     case "done":
@@ -374,6 +379,11 @@ export function UploadZone({
         const { meta } = p;
         const file = pendingUploadToFile(p);
 
+        // A task for this record is already live in the engine (dropped
+        // earlier this session, or a duplicate read) — never restart it.
+        const liveTasks = engineRef.current?.getTasks() ?? [];
+        if (liveTasks.some((t) => t.id === meta.id)) continue;
+
         let resumeSessionId: string | null = null;
         if (meta.sessionId) {
           const session = sessions.find((s) => s._id === meta.sessionId);
@@ -383,16 +393,33 @@ export function UploadZone({
               void removePendingUpload(meta.id);
               continue;
             }
+            // Only auto-resume genuinely mid-flight sessions. A failed or
+            // cancelled one stays in the interrupted list for manual resume
+            // (auto-restarting a known-failed upload would loop forever).
+            if (!isMidflight(session)) continue;
             resumeSessionId = session._id;
           }
         }
         if (!resumeSessionId) {
+          // Filename fallback only when the session actually transferred
+          // bytes (a real partial upload) — a 0-byte stale session from an
+          // old attempt must not hijack a fresh upload.
           const match = sessions.find(
             (s) =>
               isRecoverable(s) &&
+              isMidflight(s) &&
+              s.uploadedBytes > 0 &&
               s.filename.toLowerCase() === meta.filename.toLowerCase(),
           );
           resumeSessionId = match?._id ?? null;
+        }
+        // Skip sessions another live task already owns (e.g. a duplicate
+        // pending record for the same interrupted session).
+        if (
+          resumeSessionId &&
+          liveTasks.some((t) => t.sessionId === resumeSessionId)
+        ) {
+          continue;
         }
         engineRef.current?.addFile(file, resumeSessionId, meta.id);
       }
@@ -412,10 +439,14 @@ export function UploadZone({
         });
         continue;
       }
-      // Session recovery: if a recoverable session matches this filename,
-      // resume that session instead of creating a fresh one.
+      // Session recovery: if a recoverable session matches this filename and
+      // actually transferred bytes, resume it instead of creating a fresh
+      // one. A 0-byte stale session (old interrupted attempt) must not hijack
+      // a fresh drop — it stays in the interrupted list for manual resume.
       const match = recoverable.find(
-        (s) => s.filename.toLowerCase() === file.name.toLowerCase(),
+        (s) =>
+          s.uploadedBytes > 0 &&
+          s.filename.toLowerCase() === file.name.toLowerCase(),
       );
       engineRef.current?.addFile(file, match?._id ?? null);
     }
