@@ -105,9 +105,15 @@ export class UploadEngine {
    * Add a file. If a previous session for the same file exists in a
    * recoverable state (created/uploading/failed), pass it in to re-attach
    * rather than creating a fresh one — recovery after a refresh.
+   *
+   * `preferredId` is used when re-attaching an upload restored from
+   * IndexedDB so the persisted record key (and preview URL) stays stable
+   * across refreshes.
    */
-  addFile(file: File, existingSessionId?: string | null) {
-    const id = `up-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  addFile(file: File, existingSessionId?: string | null, preferredId?: string) {
+    const id =
+      preferredId ??
+      `up-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const task: UploadTask = {
       id,
       sessionId: existingSessionId ?? null,

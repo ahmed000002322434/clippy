@@ -172,6 +172,7 @@ export const completeUploadSession = mutation({
       status: "ready",
       transcriptionStatus: "none",
       mediaStatus: "pending",
+      lastActivityAt: now,
       createdAt: now,
     });
 

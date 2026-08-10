@@ -22,6 +22,8 @@ export const VIDEO_STATUS = v.union(
   v.literal("analyzing"),
   v.literal("analyzed"),
   v.literal("failed"),
+  // Original file reclaimed by the idle-original cleanup; clips stay.
+  v.literal("expired"),
 );
 export type VideoStatus = Infer<typeof VIDEO_STATUS>;
 
@@ -193,6 +195,13 @@ const schema = defineSchema(
       waveform: v.optional(v.any()),
       // Sampled timeline thumbnails (compact data-urls)
       timelineThumbnails: v.optional(v.array(v.string())),
+      // --- Phase 3: lifecycle ---
+      // Last time this video (or anything derived from it — clips, renders)
+      // saw user activity. Drives the idle-original cleanup: once clips
+      // exist and no activity happened for 2h, the original is deleted.
+      lastActivityAt: v.optional(v.number()),
+      // When the idle cleanup removed the original storage object.
+      originalDeletedAt: v.optional(v.number()),
     })
       .index("by_project", ["projectId", "createdAt"])
       .index("by_user", ["userId", "createdAt"]),

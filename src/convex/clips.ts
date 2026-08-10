@@ -52,6 +52,8 @@ export const createClips = mutation({
       });
       created++;
     }
+    // Making clips counts as activity — keeps the original around.
+    await ctx.db.patch(args.videoId, { lastActivityAt: now });
     const project = await ctx.db.get(video.projectId);
     if (project) {
       await ctx.db.patch(project._id, {
@@ -111,6 +113,8 @@ export const updateClip = mutation({
       if (args[key] !== undefined) patch[key] = args[key];
     }
     await ctx.db.patch(args.clipId, patch);
+    // Editing a clip counts as activity on the source video.
+    await ctx.db.patch(clip.videoId, { lastActivityAt: NOW() });
   },
 });
 

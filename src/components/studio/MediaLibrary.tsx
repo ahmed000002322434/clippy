@@ -131,6 +131,7 @@ export function MediaLibrary({
   const jobs = useQuery(api.jobs.listJobs, { projectId });
   const renameVideo = useMutation(api.videos.renameVideo);
   const deleteVideo = useMutation(api.videos.deleteVideo);
+  const touchVideo = useMutation(api.videos.touchVideo);
 
   const [renamingId, setRenamingId] = useState<Id<"videos"> | null>(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -231,7 +232,17 @@ export function MediaLibrary({
                 {formatBytes(video.size)}
               </p>
               <div className="mt-1 flex flex-wrap items-center gap-1">
-                <StateBadge state={state} />
+                {video.status === "expired" ? (
+                  <Badge
+                    variant="outline"
+                    className="gap-1 text-[10px] text-amber-600 dark:text-amber-300"
+                    title="Clips & exports are kept — the original file was deleted after 2h of inactivity."
+                  >
+                    <Clock className="size-3" /> Original removed
+                  </Badge>
+                ) : (
+                  <StateBadge state={state} />
+                )}
                 {state.kind === "ready" && video.transcriptionStatus === "done" && (
                   <Badge variant="secondary" className="clay-chip gap-1 text-[10px]">
                     <CheckCircle2 className="size-3 text-primary" /> Transcript
@@ -263,7 +274,11 @@ export function MediaLibrary({
                 variant="ghost"
                 size="icon-sm"
                 title="Preview"
-                onClick={() => setPreviewId(video._id)}
+                onClick={() => {
+                  setPreviewId(video._id);
+                  // Viewing counts as activity — keeps the original around.
+                  void touchVideo({ videoId: video._id });
+                }}
                 disabled={!video.url && !video.proxyUrl}
               >
                 <Play className="size-4" />

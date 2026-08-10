@@ -30,6 +30,7 @@ import { formatDuration, formatTimestamp } from "@/lib/video/format";
 import { useNavigate, useParams } from "react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Archive,
   ArrowLeft,
   ArrowRight,
   BadgeCheck,
@@ -66,6 +67,7 @@ export default function ClipStudioPage() {
   const updateRenderJob = useMutation(api.renderJobs.updateRenderJob);
   const generateUploadUrl = useMutation(api.videos.generateUploadUrl);
   const generateHooksAction = useAction(api.ai.generateHooks);
+  const touchVideo = useMutation(api.videos.touchVideo);
 
   const [aspect, setAspect] = useState<AspectRatio>("9:16");
   const [startMs, setStartMs] = useState(0);
@@ -88,6 +90,16 @@ export default function ClipStudioPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawerRef = useRef<ReturnType<typeof createPreviewDrawer> | null>(null);
+
+  // Opening a clip in the studio counts as activity on the source video —
+  // keeps the original around past the 2h idle window.
+  const touchedVideoRef = useRef<Id<"videos"> | null>(null);
+  useEffect(() => {
+    if (clip && touchedVideoRef.current !== clip.videoId) {
+      touchedVideoRef.current = clip.videoId;
+      void touchVideo({ videoId: clip.videoId });
+    }
+  }, [clip, touchVideo]);
 
   // sync clip bounds into local state once loaded
   useEffect(() => {
@@ -425,30 +437,42 @@ export default function ClipStudioPage() {
           {/* LEFT: player */}
           <div className="flex flex-col gap-3">
             <div className="clay flex justify-center p-3">
-              <div
-                className="relative overflow-hidden rounded-2xl bg-black"
-                style={{ width: "100%", maxWidth: 460, aspectRatio: ASPECT_DIMENSIONS[aspect].width / ASPECT_DIMENSIONS[aspect].height }}
-              >
-                <video
-                  ref={videoRef}
-                  src={clip.videoUrl ?? undefined}
-                  preload="auto"
-                  playsInline
-                  className="absolute inset-0 h-full w-full opacity-0"
-                />
-                <canvas ref={canvasRef} className="h-full w-full" />
-                {!playing && (
-                  <button
-                    onClick={togglePlay}
-                    className="clay-press absolute inset-0 flex items-center justify-center bg-black/20"
-                    title="Play (Space)"
-                  >
-                    <div className="clay flex size-16 items-center justify-center rounded-full">
-                      <Play className="ml-1 size-8" fill="currentColor" />
-                    </div>
-                  </button>
-                )}
-              </div>
+              {clip.videoUrl ? (
+                <div
+                  className="relative overflow-hidden rounded-2xl bg-black"
+                  style={{ width: "100%", maxWidth: 460, aspectRatio: ASPECT_DIMENSIONS[aspect].width / ASPECT_DIMENSIONS[aspect].height }}
+                >
+                  <video
+                    ref={videoRef}
+                    src={clip.videoUrl}
+                    preload="auto"
+                    playsInline
+                    className="absolute inset-0 h-full w-full opacity-0"
+                  />
+                  <canvas ref={canvasRef} className="h-full w-full" />
+                  {!playing && (
+                    <button
+                      onClick={togglePlay}
+                      className="clay-press absolute inset-0 flex items-center justify-center bg-black/20"
+                      title="Play (Space)"
+                    >
+                      <div className="clay flex size-16 items-center justify-center rounded-full">
+                        <Play className="ml-1 size-8" fill="currentColor" />
+                      </div>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="flex min-h-56 w-full max-w-[460px] flex-col items-center justify-center gap-2 rounded-2xl bg-black/60 p-6 text-center">
+                  <Archive className="size-8 text-muted-foreground" />
+                  <p className="text-sm font-semibold text-white">Original video removed</p>
+                  <p className="max-w-xs text-xs text-white/60">
+                    The source file was deleted after 2 hours of inactivity. Exported
+                    clips and their renders are safe — re-upload the source to trim or
+                    re-render.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* transport */}
@@ -876,6 +900,11 @@ export default function ClipStudioPage() {
                         </Button>
                       </div>
                     </div>
+                  ) : !clip.videoUrl ? (
+                    <p className="rounded-xl bg-accent/50 px-3 py-2 text-xs text-muted-foreground">
+                      The original source was removed after 2h of inactivity. Re-upload
+                      the video to render or re-render this clip.
+                    </p>
                   ) : (
                     <Button size="lg" className="clay-press gap-2" onClick={handleRender}>
                       <Sparkles className="size-5" />

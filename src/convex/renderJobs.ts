@@ -30,6 +30,8 @@ export const createRenderJob = mutation({
       updatedAt: now,
     });
     await ctx.db.patch(args.clipId, { status: "rendering" });
+    // Rendering counts as activity — keeps the source original around.
+    await ctx.db.patch(clip.videoId, { lastActivityAt: now });
     return jobId;
   },
 });
@@ -58,6 +60,8 @@ export const updateRenderJob = mutation({
     // reflect on the clip
     const clip = await ctx.db.get(job.clipId);
     if (clip) {
+      // Render progress/completion counts as activity on the source video.
+      await ctx.db.patch(clip.videoId, { lastActivityAt: NOW() });
       if (args.status === "completed") {
         const url = args.storageId
           ? await ctx.storage.getUrl(args.storageId)

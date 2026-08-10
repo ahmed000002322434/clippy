@@ -21,6 +21,7 @@ import {
   Archive,
   ArrowLeft,
   CheckCircle2,
+  Clock,
   ChevronRight,
   Loader2,
   Mic,
@@ -75,6 +76,7 @@ export default function ProjectPage() {
   const deleteProject = useMutation(api.projects.deleteProject);
   const transcribe = useAction(api.ai.transcribe);
   const createClips = useMutation(api.clips.createClips);
+  const touchVideo = useMutation(api.videos.touchVideo);
 
   // Browser-side ingestion worker: picks up queued MEDIA_INGESTION jobs and
   // runs the real processing pipeline (probe → analyze → proxy → thumbs).
@@ -92,9 +94,12 @@ export default function ProjectPage() {
 
   useEffect(() => {
     if (videos && videos.length > 0 && !selectedVideoId) {
-      setSelectedVideoId(videos[0]._id);
+      const first = videos[0]._id;
+      setSelectedVideoId(first);
+      // Opening a video counts as activity — keeps the original around.
+      void touchVideo({ videoId: first });
     }
-  }, [videos, selectedVideoId]);
+  }, [videos, selectedVideoId, touchVideo]);
 
   if (project === undefined || videos === undefined || clips === undefined) {
     return (
@@ -295,7 +300,11 @@ export default function ProjectPage() {
                   projectId={project._id}
                   videos={videos}
                   selectedVideoId={selectedVideo?._id ?? null}
-                  onSelect={(id) => setSelectedVideoId(id)}
+                  onSelect={(id) => {
+                    setSelectedVideoId(id);
+                    // Selecting a video counts as activity.
+                    void touchVideo({ videoId: id });
+                  }}
                 />
               )}
             </div>
@@ -451,6 +460,21 @@ export default function ProjectPage() {
                     </p>
                   )}
                 </div>
+
+                {/* expired-original notice */}
+                {selectedVideo.status === "expired" && (
+                  <div className="clay flex items-start gap-3 border-amber-300/40 p-4">
+                    <Clock className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-300" />
+                    <div className="text-sm">
+                      <p className="font-semibold">Original file removed</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        The source video was deleted after 2 hours of inactivity. Your
+                        clips, analysis and exports are safe — re-upload the source to
+                        trim or re-render clips.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* clip grid */}
                 <div className="flex flex-col gap-3">

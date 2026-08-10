@@ -47,6 +47,7 @@ export const createVideo = mutation({
       thumbnail: args.thumbnail,
       status: "ready",
       transcriptionStatus: "none",
+      lastActivityAt: NOW(),
       createdAt: NOW(),
     });
 
@@ -96,6 +97,22 @@ export const updateVideo = mutation({
         await ctx.db.patch(project._id, { updatedAt: NOW() });
       }
     }
+  },
+});
+
+/**
+ * Record user activity on a video (viewing/selecting it). The idle-original
+ * cleanup uses lastActivityAt to decide when a video with clips can have its
+ * original file reclaimed (2h without any activity).
+ */
+export const touchVideo = mutation({
+  args: { videoId: v.id("videos") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not authenticated");
+    const video = await ctx.db.get(args.videoId);
+    if (!video || video.userId !== userId) throw new Error("Forbidden");
+    await ctx.db.patch(args.videoId, { lastActivityAt: NOW() });
   },
 });
 

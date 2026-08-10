@@ -1,14 +1,26 @@
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { UploadEngine } from "@/lib/upload/engine";
 import type { UploadTask } from "@/lib/upload/engine";
 import { createStorageProvider } from "@/lib/storage/convex";
 import type { ConvexUploadMutations } from "@/lib/storage/convex";
 import { validateVideoFileClient } from "@/lib/upload/validate";
 import { analyzeVideoFile } from "@/lib/video/analyze";
-import { formatBytes, formatEta, formatSpeed } from "@/lib/video/format";
+import {
+  formatBytes,
+  formatEta,
+  formatSpeed,
+} from "@/lib/video/format";
+import {
+  listPendingUploads,
+  pendingUploadToFile,
+  removePendingUpload,
+  savePendingFile,
+  savePendingMeta,
+  type PendingUpload,
+} from "@/lib/upload/persist";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -92,6 +104,154 @@ function phaseLabel(task: UploadTask): string {
   }
 }
 
+const ACTIVE_PHASES = [
+  "validating",
+  "creating-session",
+  "uploading",
+  "finalizing",
+] as const;
+
+/**
+ * One upload task: real video preview on the left, with a live progress
+ * overlay on top of it, plus per-file controls.
+ */
+function UploadTaskRow({
+  task,
+  onCancel,
+  onRetry,
+  onRemove,
+}: {
+  task: UploadTask;
+  onCancel: () => void;
+  onRetry: () => void;
+  onRemove: () => void;
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const url = URL.createObjectURL(task.file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [task.file]);
+
+  const active = ACTIVE_PHASES.includes(task.phase as (typeof ACTIVE_PHASES)[number]);
+
+  return (
+    <div className="clay flex items-center gap-3 px-3 py-3">
+      {/* live preview with upload overlay */}
+      <div className="relative h-16 w-24 shrink-0 overflow-hidden rounded-xl bg-black">
+        {previewUrl ? (
+          <video
+            src={previewUrl}
+            muted
+            playsInline
+            preload="metadata"
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center">
+            <FileVideo className="size-5 text-white/70" />
+          </div>
+        )}
+        {active && (
+          <div className="absolute inset-0 flex flex-col justify-end bg-black/35">
+            <div className="h-1 w-full bg-white/25">
+              <div
+                className="h-full bg-primary transition-all duration-200"
+                style={{ width: `${task.pct}%` }}
+              />
+            </div>
+            <span className="px-1.5 pb-0.5 text-right text-[9px] font-bold tabular-nums text-white drop-shadow">
+              {task.pct}%
+            </span>
+          </div>
+        )}
+        {task.phase === "done" && (
+          <div className="absolute inset-0 flex items-center justify-center bg-emerald-600/40">
+            <CheckCircle2 className="size-6 text-white" />
+          </div>
+        )}
+        {(task.phase === "error" || task.phase === "cancelled") && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+            <XCircle className="size-6 text-white" />
+          </div>
+        )}
+      </div>
+
+      {/* details */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-sm font-medium">{task.file.name}</p>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {formatBytes(task.file.size)}
+          </span>
+        </div>
+        {task.phase === "error" || task.phase === "cancelled" ? (
+          <p className="mt-1 text-xs text-destructive">
+            {task.error}
+            {task.errorClass === "retryable" && " — you can retry."}
+            {task.errorClass === "user-action" &&
+              task.phase === "cancelled" &&
+              " You can resume from the interrupted-uploads list."}
+          </p>
+        ) : task.phase === "done" ? (
+          <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-300">
+            {phaseLabel(task)}
+          </p>
+        ) : (
+          <>
+            <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+              <div
+                className={cn(
+                  "h-full rounded-full transition-all duration-200",
+                  task.phase === "finalizing" ? "bg-emerald-500" : "bg-primary",
+                )}
+                style={{ width: `${task.pct}%` }}
+              />
+            </div>
+            <p className="mt-0.5 flex items-center justify-between text-[10px] text-muted-foreground">
+              <span className="truncate">{phaseLabel(task)}</span>
+              <span className="shrink-0 tabular-nums">{task.pct}%</span>
+            </p>
+          </>
+        )}
+      </div>
+
+      {/* actions */}
+      <div className="flex shrink-0 items-center gap-1">
+        {task.phase === "error" && task.errorClass !== "user-action" && (
+          <Button variant="ghost" size="icon-sm" onClick={onRetry} title="Retry upload">
+            <RefreshCcw className="size-4" />
+          </Button>
+        )}
+        {task.phase === "error" && task.errorClass === "user-action" && (
+          <Button variant="ghost" size="icon-sm" onClick={onRemove} title="Dismiss">
+            <X className="size-4" />
+          </Button>
+        )}
+        {active && (
+          <Button variant="ghost" size="icon-sm" onClick={onCancel} title="Cancel upload">
+            <X className="size-4" />
+          </Button>
+        )}
+        {task.phase === "cancelled" && (
+          <Button variant="ghost" size="icon-sm" onClick={onRetry} title="Try again">
+            <RefreshCcw className="size-4" />
+          </Button>
+        )}
+        {task.phase === "done" && (
+          <Button variant="ghost" size="icon-sm" onClick={onRemove} title="Dismiss">
+            <X className="size-4" />
+          </Button>
+        )}
+        {task.phase === "finalizing" && (
+          <Loader2 className="size-4 animate-spin text-muted-foreground" />
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function UploadZone({
   projectId,
   onUploaded,
@@ -118,7 +278,16 @@ export function UploadZone({
   onUploadedRef.current = onUploaded;
 
   const sessions = useQuery(api.uploads.listUploadSessions, { projectId });
-  const recoverable = (sessions ?? []).filter(isRecoverable);
+
+  // Hide interrupted sessions that are already re-attached to a live task.
+  const attachedSessionIds = new Set(
+    tasks
+      .map((t) => t.sessionId)
+      .filter((s): s is string => Boolean(s)),
+  );
+  const recoverable = (sessions ?? [])
+    .filter(isRecoverable)
+    .filter((s) => !attachedSessionIds.has(s._id));
 
   // Build the provider once per render; the engine follows it.
   const mutations: ConvexUploadMutations = {
@@ -142,6 +311,93 @@ export function UploadZone({
     });
     engineRef.current = engine;
   }
+
+  // -------------------------------------------------------------------------
+  // IndexedDB persistence: remember in-flight uploads (blob + session) so a
+  // closed page can resume them automatically on the next visit.
+  // -------------------------------------------------------------------------
+  const persistedBlobIds = useRef(new Set<string>());
+  const autoResumeStarted = useRef(false);
+
+  useEffect(() => {
+    for (const t of tasks) {
+      // Finished, cancelled, or explicitly dismissed by the user — nothing
+      // left to resume locally.
+      if (
+        t.phase === "done" ||
+        t.phase === "cancelled" ||
+        (t.phase === "error" && t.errorClass === "user-action")
+      ) {
+        persistedBlobIds.current.delete(t.id);
+        void removePendingUpload(t.id);
+        continue;
+      }
+      void savePendingMeta({
+        id: t.id,
+        filename: t.file.name,
+        mimeType: t.file.type || "video/mp4",
+        size: t.file.size,
+        sessionId: t.sessionId,
+        startedAt: t.createdAt,
+        lastPct: t.pct,
+      });
+      // Blob is written once per upload; progress updates only touch meta.
+      if (!persistedBlobIds.current.has(t.id)) {
+        persistedBlobIds.current.add(t.id);
+        void savePendingFile(t.id, t.file).catch(() => {
+          persistedBlobIds.current.delete(t.id);
+        });
+      }
+    }
+  }, [tasks]);
+
+  // Reset per-project state when the zone is reused for another project.
+  useEffect(() => {
+    autoResumeStarted.current = false;
+    persistedBlobIds.current.clear();
+    setTasks([]);
+  }, [projectId]);
+
+  // Auto-resume interrupted uploads once sessions have loaded.
+  useEffect(() => {
+    if (!sessions || autoResumeStarted.current) return;
+    autoResumeStarted.current = true;
+    void (async () => {
+      let pending: PendingUpload[] = [];
+      try {
+        pending = await listPendingUploads();
+      } catch {
+        return;
+      }
+      for (const p of pending) persistedBlobIds.current.add(p.meta.id);
+      for (const p of pending) {
+        const { meta } = p;
+        const file = pendingUploadToFile(p);
+
+        let resumeSessionId: string | null = null;
+        if (meta.sessionId) {
+          const session = sessions.find((s) => s._id === meta.sessionId);
+          if (session) {
+            if (session.status === "completed") {
+              // Already uploaded on a previous visit — nothing to resume.
+              void removePendingUpload(meta.id);
+              continue;
+            }
+            resumeSessionId = session._id;
+          }
+        }
+        if (!resumeSessionId) {
+          const match = sessions.find(
+            (s) =>
+              isRecoverable(s) &&
+              s.filename.toLowerCase() === meta.filename.toLowerCase(),
+          );
+          resumeSessionId = match?._id ?? null;
+        }
+        engineRef.current?.addFile(file, resumeSessionId, meta.id);
+      }
+    })().catch(() => undefined);
+  }, [sessions]);
 
   const addFiles = (files: FileList | File[]) => {
     const list = Array.from(files);
@@ -290,7 +546,7 @@ export function UploadZone({
           Drop a long-form video here, or <span className="text-primary underline underline-offset-2">browse</span>
         </p>
         <p className="text-xs text-muted-foreground">
-          MP4 · MOV · WebM — up to 2GB. Uploads stream straight to storage; real progress, pause &amp; resume.
+          MP4 · MOV · WebM — up to 2GB. Real progress, auto-resume — close the page and the upload picks back up.
         </p>
         <input
           ref={inputRef}
@@ -332,7 +588,7 @@ export function UploadZone({
         />
       </div>
 
-      {/* interrupted-session recovery */}
+      {/* interrupted-session recovery (manual fallback) */}
       {recoverable.length > 0 && (
         <div className="clay flex flex-col gap-2 p-3">
           <p className="flex items-center gap-1.5 text-xs font-bold text-amber-600 dark:text-amber-300">
@@ -502,116 +758,13 @@ export function UploadZone({
       {tasks.length > 0 && (
         <div className="flex flex-col gap-2">
           {tasks.map((task) => (
-            <div key={task.id} className="clay flex items-center gap-3 px-4 py-3">
-              <div className="clay-inset flex size-10 shrink-0 items-center justify-center rounded-xl">
-                {task.phase === "done" ? (
-                  <CheckCircle2 className="size-5 text-emerald-600 dark:text-emerald-300" />
-                ) : task.phase === "error" ? (
-                  <XCircle className="size-5 text-destructive" />
-                ) : task.phase === "cancelled" ? (
-                  <XCircle className="size-5 text-muted-foreground" />
-                ) : (
-                  <FileVideo className="size-5 text-primary" />
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="truncate text-sm font-medium">{task.file.name}</p>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {formatBytes(task.file.size)}
-                  </span>
-                </div>
-                {task.phase === "error" || task.phase === "cancelled" ? (
-                  <p className="mt-1 text-xs text-destructive">
-                    {task.error}
-                    {task.errorClass === "retryable" && " — you can retry."}
-                    {task.errorClass === "user-action" &&
-                      task.phase === "cancelled" &&
-                      " You can resume from the interrupted-uploads list."}
-                  </p>
-                ) : task.phase === "done" ? (
-                  <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-300">
-                    {phaseLabel(task)}
-                  </p>
-                ) : (
-                  <>
-                    <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
-                      <div
-                        className={cn(
-                          "h-full rounded-full transition-all duration-200",
-                          task.phase === "finalizing"
-                            ? "bg-emerald-500"
-                            : "bg-primary",
-                        )}
-                        style={{ width: `${task.pct}%` }}
-                      />
-                    </div>
-                    <p className="mt-0.5 flex items-center justify-between text-[10px] text-muted-foreground">
-                      <span className="truncate">{phaseLabel(task)}</span>
-                      <span className="shrink-0 tabular-nums">{task.pct}%</span>
-                    </p>
-                  </>
-                )}
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                {task.phase === "error" && task.errorClass !== "user-action" && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => engineRef.current?.retry(task.id)}
-                    title="Retry upload"
-                  >
-                    <RefreshCcw className="size-4" />
-                  </Button>
-                )}
-                {task.phase === "error" && task.errorClass === "user-action" && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => engineRef.current?.remove(task.id)}
-                    title="Dismiss"
-                  >
-                    <X className="size-4" />
-                  </Button>
-                )}
-                {(task.phase === "validating" ||
-                  task.phase === "creating-session" ||
-                  task.phase === "uploading" ||
-                  task.phase === "finalizing") && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => engineRef.current?.cancel(task.id)}
-                    title="Cancel upload"
-                  >
-                    <X className="size-4" />
-                  </Button>
-                )}
-                {task.phase === "cancelled" && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => engineRef.current?.retry(task.id)}
-                    title="Try again"
-                  >
-                    <RefreshCcw className="size-4" />
-                  </Button>
-                )}
-                {task.phase === "done" && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => engineRef.current?.remove(task.id)}
-                    title="Dismiss"
-                  >
-                    <X className="size-4" />
-                  </Button>
-                )}
-                {task.phase === "finalizing" && (
-                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                )}
-              </div>
-            </div>
+            <UploadTaskRow
+              key={task.id}
+              task={task}
+              onCancel={() => engineRef.current?.cancel(task.id)}
+              onRetry={() => engineRef.current?.retry(task.id)}
+              onRemove={() => engineRef.current?.remove(task.id)}
+            />
           ))}
         </div>
       )}
