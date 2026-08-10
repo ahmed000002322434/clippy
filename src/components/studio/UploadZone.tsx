@@ -6,6 +6,7 @@ import { UploadEngine } from "@/lib/upload/engine";
 import type { UploadTask } from "@/lib/upload/engine";
 import { createStorageProvider } from "@/lib/storage/convex";
 import type { ConvexUploadMutations } from "@/lib/storage/convex";
+import type { StorageProvider } from "@/lib/storage/provider";
 import { validateVideoFileClient } from "@/lib/upload/validate";
 import { analyzeVideoFile } from "@/lib/video/analyze";
 import {
@@ -115,6 +116,43 @@ const ACTIVE_PHASES = [
   "uploading",
   "finalizing",
 ] as const;
+
+// ---------------------------------------------------------------------------
+// Module-level engine registry. An upload's engine lives for the whole
+// browser session, keyed by project — navigating away and back reattaches to
+// the SAME in-flight tasks instead of starting a second uploader for the same
+// session (the classic "upload completes, then restarts forever" loop).
+// ---------------------------------------------------------------------------
+interface EngineSlot {
+  engine: UploadEngine;
+  listener: ((tasks: UploadTask[]) => void) | null;
+  onCompleted: ((videoId: Id<"videos">) => void) | null;
+}
+
+const engineSlots = new Map<string, EngineSlot>();
+
+function getEngineSlot(projectId: string, provider: StorageProvider): EngineSlot {
+  let slot = engineSlots.get(projectId);
+  if (!slot) {
+    const fresh: EngineSlot = {
+      engine: null as unknown as UploadEngine,
+      listener: null,
+      onCompleted: null,
+    };
+    fresh.engine = new UploadEngine(provider, projectId, {
+      onUpdate: (ts) => fresh.listener?.(ts),
+      onCompleted: (_task, videoId) =>
+        fresh.onCompleted?.(videoId as Id<"videos">),
+    });
+    engineSlots.set(projectId, fresh);
+    slot = fresh;
+  } else {
+    // Rebind the storage mutations — Convex useMutation results are stable,
+    // but this also picks up a fresh auth context after a re-login.
+    slot.engine.provider = provider;
+  }
+  return slot;
+}
 
 /**
  * One upload task: real video preview on the left, with a live progress
@@ -306,16 +344,11 @@ export function UploadZone({
   };
   const provider = createStorageProvider(mutations);
 
+  // Shared per-project engine: survives navigation between pages, so an
+  // upload started here keeps running (and is never duplicated) when the
+  // user visits the clip studio and comes back.
   const engineRef = useRef<UploadEngine | null>(null);
-  if (!engineRef.current || engineRef.current.projectId !== projectId) {
-    engineRef.current?.dispose();
-    const engine = new UploadEngine(provider, projectId, {
-      onUpdate: (ts) => setTasks([...ts]),
-      onCompleted: (_task, videoId) =>
-        onUploadedRef.current?.(videoId as Id<"videos">),
-    });
-    engineRef.current = engine;
-  }
+  engineRef.current = getEngineSlot(projectId, provider).engine;
 
   // -------------------------------------------------------------------------
   // IndexedDB persistence: remember in-flight uploads (blob + session) so a
@@ -339,6 +372,7 @@ export function UploadZone({
       }
       void savePendingMeta({
         id: t.id,
+        projectId,
         filename: t.file.name,
         mimeType: t.file.type || "video/mp4",
         size: t.file.size,
@@ -363,6 +397,26 @@ export function UploadZone({
     setTasks([]);
   }, [projectId]);
 
+  // Attach this instance's callbacks while mounted. The engine itself keeps
+  // running across navigations; only the listener moves between instances.
+  // Runs after the reset effect so the re-sync below repopulates the list
+  // with the shared engine's live tasks instead of being cleared again.
+  useEffect(() => {
+    const s = engineSlots.get(projectId);
+    if (!s) return;
+    s.listener = (ts) => setTasks(ts);
+    s.onCompleted = (videoId) => onUploadedRef.current?.(videoId);
+    // Re-sync live state after a remount (navigation back, etc.).
+    setTasks([...s.engine.getTasks()]);
+    return () => {
+      const current = engineSlots.get(projectId);
+      if (current) {
+        current.listener = null;
+        current.onCompleted = null;
+      }
+    };
+  }, [projectId]);
+
   // Auto-resume interrupted uploads once sessions have loaded.
   useEffect(() => {
     if (!sessions || autoResumeStarted.current) return;
@@ -379,28 +433,34 @@ export function UploadZone({
         const { meta } = p;
         const file = pendingUploadToFile(p);
 
-        // A task for this record is already live in the engine (dropped
-        // earlier this session, or a duplicate read) — never restart it.
+        // Belongs to a different project — leave it for that page.
+        if (meta.projectId && meta.projectId !== projectId) continue;
+
+        // A task for this record is already live in the shared engine
+        // (dropped earlier this session, or a duplicate read) — never
+        // restart it.
         const liveTasks = engineRef.current?.getTasks() ?? [];
         if (liveTasks.some((t) => t.id === meta.id)) continue;
 
         let resumeSessionId: string | null = null;
+        let drop = false;
         if (meta.sessionId) {
           const session = sessions.find((s) => s._id === meta.sessionId);
-          if (session) {
-            if (session.status === "completed") {
-              // Already uploaded on a previous visit — nothing to resume.
-              void removePendingUpload(meta.id);
-              continue;
-            }
-            // Only auto-resume genuinely mid-flight sessions. A failed or
-            // cancelled one stays in the interrupted list for manual resume
-            // (auto-restarting a known-failed upload would loop forever).
-            if (!isMidflight(session)) continue;
+          if (!session) {
+            // Session was cleaned up server-side — nothing left to resume.
+            drop = true;
+          } else if (session.status === "completed") {
+            // Already uploaded on a previous visit — nothing to resume.
+            drop = true;
+          } else if (!isMidflight(session)) {
+            // Failed/cancelled — manual resume only. Auto-restarting a
+            // known-failed upload would loop forever.
+            drop = true;
+          } else {
             resumeSessionId = session._id;
           }
         }
-        if (!resumeSessionId) {
+        if (!resumeSessionId && !drop) {
           // Filename fallback only when the session actually transferred
           // bytes (a real partial upload) — a 0-byte stale session from an
           // old attempt must not hijack a fresh upload.
@@ -413,12 +473,18 @@ export function UploadZone({
           );
           resumeSessionId = match?._id ?? null;
         }
-        // Skip sessions another live task already owns (e.g. a duplicate
-        // pending record for the same interrupted session).
+        if (drop) {
+          void removePendingUpload(meta.id);
+          continue;
+        }
+        // Another task (live OR finished) already owns this session — never
+        // attach a second uploader to it. A finished task already completed
+        // the upload; re-attaching it is what made uploads restart forever.
         if (
           resumeSessionId &&
           liveTasks.some((t) => t.sessionId === resumeSessionId)
         ) {
+          void removePendingUpload(meta.id);
           continue;
         }
         engineRef.current?.addFile(file, resumeSessionId, meta.id);

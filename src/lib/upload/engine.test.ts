@@ -204,6 +204,26 @@ describe("UploadEngine", () => {
     expect(provider.completed.length).toBe(1);
   });
 
+  test("a finished task keeps owning its session — re-attaching it never restarts the upload", async () => {
+    const provider = new MockProvider();
+    const engine = new UploadEngine(provider, "proj-1");
+    engine.addFile(makeFile(), "resume-session");
+    await waitForTerminal(engine);
+    const done = engine.getTasks()[0];
+    expect(done?.phase).toBe("done");
+    expect(provider.completed.length).toBe(1);
+
+    // A stale re-attach (e.g. auto-resume racing a remount) must be a no-op:
+    // the same session id comes back as the SAME finished task, and no new
+    // pipeline or completion is ever started for it.
+    const again = engine.addFile(makeFile(), "resume-session");
+    expect(again).toBe(done?.id);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(provider.calls.filter((c) => c.startsWith("put:")).length).toBe(1);
+    expect(provider.calls.filter((c) => c.startsWith("fresh:")).length).toBe(1);
+    expect(provider.completed.length).toBe(1);
+  });
+
   test("never attaches a second task to a session an active task owns", async () => {
     const provider = new MockProvider();
     provider.hang = true;

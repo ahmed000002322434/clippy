@@ -137,7 +137,11 @@ export class ConvexStorageProvider implements StorageProvider {
         }
       };
       xhr.onerror = () => reject(new UploadError("Network error during upload.", "retryable"));
-      xhr.onabort = () => reject(new UploadError("Upload cancelled.", "user-action"));
+      // Abort is an intentional cancellation — reject with a real
+      // AbortError so the engine maps it to phase "cancelled" (and cancels
+      // the session) instead of a retryable failure.
+      xhr.onabort = () =>
+        reject(new DOMException("Upload cancelled.", "AbortError"));
 
       const onAbort = () => xhr.abort();
       callbacks.signal?.addEventListener("abort", onAbort, { once: true });

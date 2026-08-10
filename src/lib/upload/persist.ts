@@ -15,6 +15,8 @@
 export interface PendingUploadMeta {
   /** Client task id (also used as the IDB record key). */
   id: string;
+  /** Project the upload belongs to — records never resume into another project. */
+  projectId: string;
   filename: string;
   mimeType: string;
   size: number;

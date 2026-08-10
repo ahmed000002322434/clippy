@@ -167,7 +167,10 @@ export const failJob = mutation({
     if (isTerminal(job.status)) return;
 
     const errorClass = args.errorClass ?? "retryable";
-    const attempts = job.attempts + 1;
+    // claimJob already counted this run, so don't double-count here — this
+    // gives the full maxAttempts budget instead of burning two attempts per
+    // run (which silently cut retries in half).
+    const attempts = job.attempts;
     const canRetry =
       errorClass === "retryable" && attempts < Math.max(1, job.maxAttempts || MAX_RETRIES);
 
@@ -175,7 +178,6 @@ export const failJob = mutation({
     if (canRetry) {
       await ctx.db.patch(args.jobId, {
         status: "retrying",
-        attempts,
         error: args.error,
         errorClass,
         updatedAt: now,

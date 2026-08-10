@@ -65,9 +65,13 @@ function taskPct(task: Pick<UploadTask, "phase" | "bytesUploaded" | "bytesTotal"
 export class UploadEngine {
   private tasks = new Map<string, UploadTask>();
   private callbacks: UploadEngineCallbacks;
-  private provider: StorageProvider;
+  /** Storage provider (rebindable — the shared engine can pick up a fresh
+   *  auth context when a new component instance mounts). */
+  provider: StorageProvider;
   /** Project this engine uploads into (recreate the engine when it changes). */
   readonly projectId: string;
+  /** Task ids whose pipeline is currently executing (single-flight guard). */
+  private running = new Set<string>();
 
   constructor(
     provider: StorageProvider,
@@ -125,14 +129,21 @@ export class UploadEngine {
       return preferredId;
     }
 
-    // Never double-attach a session that an active task already owns.
+    // Never double-attach a session that another task already owns:
+    //  - an ACTIVE task (validating → finalizing) is mid-flight on it;
+    //  - a DONE task already produced a video from it, so re-uploading it
+    //    would restart a finished upload forever.
+    // Tasks in error/cancelled are skipped on purpose — retry() and manual
+    // resume intentionally re-attach (or re-create) their session.
     if (existingSessionId) {
       const owner = Array.from(this.tasks.values()).find(
         (t) =>
           t.sessionId === existingSessionId &&
-          t.phase !== "done" &&
-          t.phase !== "error" &&
-          t.phase !== "cancelled",
+          (t.phase === "done" ||
+            t.phase === "validating" ||
+            t.phase === "creating-session" ||
+            t.phase === "uploading" ||
+            t.phase === "finalizing"),
       );
       if (owner) return owner.id;
     }
@@ -160,18 +171,14 @@ export class UploadEngine {
   }
 
   private async run(id: string) {
+    // Single-flight: never run two pipelines for the same task, and never
+    // re-run one that already finished (a stale re-attach must not restart
+    // a completed upload).
+    if (this.running.has(id)) return;
     const task = this.tasks.get(id);
     if (!task) return;
-    // Re-entry guard: a second pipeline must never run for a task that is
-    // already mid-flight (validating is fine — it is the fresh-start state
-    // used by both addFile and retry).
-    if (
-      task.phase === "creating-session" ||
-      task.phase === "uploading" ||
-      task.phase === "finalizing"
-    ) {
-      return;
-    }
+    if (task.phase === "done" || task.phase === "cancelled") return;
+    this.running.add(id);
     const signal = task.controller.signal;
 
     try {
@@ -188,7 +195,10 @@ export class UploadEngine {
         });
         sessionId = session.sessionId;
         uploadUrl = session.uploadUrl;
-        task.sessionId = sessionId;
+        // Emit through patch() so the UI + IndexedDB learn the session id —
+        // otherwise a page close mid-upload persists a session-less record
+        // that can only be resumed by re-uploading from byte 0.
+        this.patch(id, { sessionId });
       }
       await this.provider.markUploading(sessionId);
 
@@ -235,6 +245,7 @@ export class UploadEngine {
         }
       }
     } finally {
+      this.running.delete(id);
       this.emit();
     }
   }

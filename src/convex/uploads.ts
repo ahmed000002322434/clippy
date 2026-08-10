@@ -220,6 +220,54 @@ export const completeUploadSession = mutation({
   },
 });
 
+/**
+ * Reclaim upload sessions abandoned mid-flight (created/uploading/processing
+ * but never completed). Runs hourly from crons.ts. Without this, a handful of
+ * interrupted uploads would sit in the active-session pool forever and the
+ * per-user cap (MAX_ACTIVE_SESSIONS) would permanently block new uploads.
+ */
+export const expireStaleUploadSessions = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    // 24h is generous: a legitimately slow 2GB upload finishes well within
+    // this; anything still mid-flight after a day is an abandoned tab.
+    const cutoff = now - 24 * 60 * 60 * 1000;
+    let expired = 0;
+
+    const sessions = await ctx.db.query("uploadSessions").collect();
+    for (const session of sessions) {
+      if (
+        session.status !== "created" &&
+        session.status !== "uploading" &&
+        session.status !== "processing"
+      ) {
+        continue;
+      }
+      const lastTouch = session.updatedAt ?? session.createdAt;
+      if (lastTouch >= cutoff) continue;
+
+      // Drop any partial object so no orphan bytes linger.
+      if (session.storageId) {
+        try {
+          await ctx.storage.delete(session.storageId);
+        } catch {
+          // best-effort — the object may already be gone
+        }
+      }
+      await ctx.db.patch(session._id, {
+        status: "failed",
+        error: "Expired — the upload never completed. Resume it from the interrupted list.",
+        errorClass: "retryable",
+        updatedAt: now,
+      });
+      expired++;
+    }
+
+    return { expired };
+  },
+});
+
 export const failUploadSession = mutation({
   args: {
     sessionId: v.id("uploadSessions"),
