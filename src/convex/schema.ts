@@ -120,6 +120,8 @@ const schema = defineSchema(
       width: v.optional(v.number()),
       height: v.optional(v.number()),
       thumbnail: v.optional(v.string()), // compact data-url
+      // Where the video came from: "upload" | "url" | "youtube" | ...
+      source: v.optional(v.string()),
       status: VIDEO_STATUS,
       error: v.optional(v.string()),
       // Browser-computed signal analysis (energy, scenes, pauses, motion)

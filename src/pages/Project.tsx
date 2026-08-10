@@ -26,6 +26,7 @@ import {
   ChevronRight,
   FileVideo,
   Loader2,
+  Link2,
   Mic,
   MoreHorizontal,
   Sparkles,
@@ -331,6 +332,11 @@ export default function ProjectPage() {
                           {video.transcriptionStatus === "done" && (
                             <Badge variant="secondary" className="clay-chip gap-1 text-[10px]">
                               <Mic className="size-3 text-primary" /> Transcript
+                            </Badge>
+                          )}
+                          {video.source === "url" && (
+                            <Badge variant="secondary" className="clay-chip gap-1 text-[10px]">
+                              <Link2 className="size-3 text-primary" /> Imported
                             </Badge>
                           )}
                         </div>

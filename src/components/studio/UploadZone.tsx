@@ -1,19 +1,24 @@
-import { useMutation } from "convex/react";
+import { useAction, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { analyzeVideoFile } from "@/lib/video/analyze";
 import { uploadToStorage, validateVideoFile } from "@/lib/upload";
 import { formatBytes } from "@/lib/video/format";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useState, useRef } from "react";
 import {
   CheckCircle2,
+  Cloud,
   FileVideo,
+  HardDrive,
+  Link2,
   Loader2,
   RefreshCcw,
   UploadCloud,
   XCircle,
   X,
+  Youtube,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -32,6 +37,37 @@ interface Task {
 
 let taskCounter = 0;
 
+const PROVIDERS = [
+  {
+    id: "url",
+    label: "Direct link",
+    icon: Link2,
+    enabled: true,
+    hint: "Paste a direct link to a video file (MP4, MOV, WebM, MKV).",
+  },
+  {
+    id: "youtube",
+    label: "YouTube",
+    icon: Youtube,
+    enabled: false,
+    hint: "Coming soon — needs the YouTube API adapter (no scraping).",
+  },
+  {
+    id: "drive",
+    label: "Google Drive",
+    icon: HardDrive,
+    enabled: false,
+    hint: "Coming soon — needs Google Drive API + OAuth.",
+  },
+  {
+    id: "dropbox",
+    label: "Dropbox",
+    icon: Cloud,
+    enabled: false,
+    hint: "Coming soon — needs the Dropbox API + OAuth.",
+  },
+];
+
 export function UploadZone({
   projectId,
   onUploaded,
@@ -42,9 +78,20 @@ export function UploadZone({
   const generateUploadUrl = useMutation(api.videos.generateUploadUrl);
   const createVideo = useMutation(api.videos.createVideo);
   const updateVideo = useMutation(api.videos.updateVideo);
+  const importFromUrl = useAction(api.imports.importFromUrl);
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // import-from-URL state
+  const [importOpen, setImportOpen] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importStage, setImportStage] = useState<"download" | "analyze" | "done">("download");
+  const [importPct, setImportPct] = useState(0);
+  const [importError, setImportError] = useState<string | null>(null);
+  const importAbortRef = useRef<AbortController | null>(null);
 
   const patchTask = (id: string, patch: Partial<Task>) => {
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -168,6 +215,74 @@ export function UploadZone({
     setTasks((prev) => prev.filter((t) => t.id !== id));
   };
 
+  const runImport = async () => {
+    const url = importUrl.trim();
+    if (!url || importing) return;
+    const controller = new AbortController();
+    importAbortRef.current = controller;
+    setImporting(true);
+    setImportError(null);
+    setImportPct(0);
+    setImportStage("download");
+    try {
+      const { videoId, url: videoUrl } = await importFromUrl({ projectId, url });
+      if (!videoUrl) throw new Error("Imported file could not be served back.");
+
+      // Re-download from storage and run the same browser analysis pipeline so
+      // imported videos unlock clip discovery, the waveform and smart reframing.
+      setImportStage("analyze");
+      setImportPct(5);
+      const res = await fetch(videoUrl, { signal: controller.signal });
+      if (!res.ok) throw new Error(`Could not fetch imported video (${res.status}).`);
+      const blob = await res.blob();
+      const file = new File([blob], "imported-video", {
+        type: blob.type || "video/mp4",
+      });
+      try {
+        const { signals, meta } = await analyzeVideoFile(
+          file,
+          (p) => {
+            setImportPct(
+              p.stage === "reading"
+                ? Math.round(5 + p.pct * 0.3)
+                : p.stage === "audio"
+                  ? Math.round(35 + p.pct * 0.3)
+                  : Math.round(65 + p.pct * 0.35),
+            );
+          },
+          controller.signal,
+        );
+        await updateVideo({
+          videoId,
+          signals,
+          analyzedAt: Date.now(),
+          status: "analyzed",
+          durationMs: meta.durationMs,
+          width: meta.width,
+          height: meta.height,
+          thumbnail: meta.thumbnail,
+        });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") throw err;
+        // Analysis failed — video is imported but without signals
+      }
+      setImportPct(100);
+      setImportStage("done");
+      setImportOpen(false);
+      setImportUrl("");
+      onUploaded?.(videoId);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setImportError("Cancelled");
+      } else {
+        setImportError(err instanceof Error ? err.message : "Import failed");
+      }
+    } finally {
+      setImporting(false);
+      importAbortRef.current = null;
+    }
+  };
+
   const activeCount = tasks.filter(
     (t) => t.phase === "analyzing" || t.phase === "uploading" || t.phase === "creating",
   ).length;
@@ -217,6 +332,112 @@ export function UploadZone({
           }}
         />
       </div>
+
+      {/* import from URL */}
+      {importOpen ? (
+        <div className="clay flex flex-col gap-3 p-4">
+          <div className="flex flex-wrap gap-1.5">
+            {PROVIDERS.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => {
+                  if (!p.enabled) return;
+                  setImportUrl("");
+                  setImportError(null);
+                }}
+                className={cn(
+                  "clay-press clay-chip flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all",
+                  p.enabled
+                    ? "bg-background hover:bg-accent"
+                    : "cursor-not-allowed opacity-45",
+                )}
+                title={p.hint}
+                disabled={p.enabled === false}
+              >
+                <p.icon className="size-3.5" />
+                {p.label}
+                {!p.enabled && (
+                  <span className="rounded-full bg-accent/60 px-1.5 py-0.5 text-[9px] font-bold uppercase text-muted-foreground">
+                    soon
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Link2 className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={importUrl}
+                onChange={(e) => setImportUrl(e.target.value)}
+                placeholder="https://…/video.mp4"
+                className="clay-inset border-0 pl-9"
+                disabled={importing}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void runImport();
+                }}
+                autoFocus
+              />
+            </div>
+            <Button
+              className="clay-press gap-1.5"
+              disabled={importing || !importUrl.trim()}
+              onClick={() => void runImport()}
+            >
+              {importing ? <Loader2 className="size-4 animate-spin" /> : <UploadCloud className="size-4" />}
+              Import
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => {
+                if (importing) importAbortRef.current?.abort();
+                else setImportOpen(false);
+              }}
+              title={importing ? "Cancel import" : "Close"}
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Paste a direct link to a video file. YouTube, Drive and Dropbox are
+            staged behind official API adapters — no scraping.
+          </p>
+          {importing && (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between text-[11px] font-semibold">
+                <span>
+                  {importStage === "download"
+                    ? "Importing file…"
+                    : importStage === "analyze"
+                      ? "Analyzing audio & scenes…"
+                      : "Done"}
+                </span>
+                <span className="tabular-nums">{importPct}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-200"
+                  style={{ width: `${importPct}%` }}
+                />
+              </div>
+            </div>
+          )}
+          {importError && (
+            <p className="rounded-xl bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+              {importError}
+            </p>
+          )}
+        </div>
+      ) : (
+        <button
+          onClick={() => setImportOpen(true)}
+          className="clay-press flex items-center justify-center gap-2 rounded-2xl border border-dashed py-2.5 text-xs font-semibold text-muted-foreground transition-all hover:text-foreground"
+        >
+          <Link2 className="size-3.5" />
+          Import from a link instead
+        </button>
+      )}
 
       {tasks.length > 0 && (
         <div className="flex flex-col gap-2">
