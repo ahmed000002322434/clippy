@@ -19,6 +19,10 @@ export const createClips = mutation({
         hook: v.optional(v.string()),
       }),
     ),
+    // Output defaults applied to every clip in this batch (from a template / brand kit)
+    aspect: v.optional(aspectRatioValidator),
+    captionsEnabled: v.optional(v.boolean()),
+    captionStyle: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -40,8 +44,9 @@ export const createClips = mutation({
         reasons: clip.reasons,
         strategy: clip.strategy,
         hook: clip.hook,
-        aspect: "9:16",
-        captionsEnabled: true,
+        aspect: args.aspect ?? "9:16",
+        captionsEnabled: args.captionsEnabled ?? true,
+        captionStyle: args.captionStyle,
         status: "draft",
         createdAt: now,
       });

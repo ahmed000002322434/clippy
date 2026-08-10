@@ -21,6 +21,7 @@ import {
   Clapperboard,
   LayoutDashboard,
   LogOut,
+  Settings,
   Sparkles,
   Wand2,
 } from "lucide-react";
@@ -120,6 +121,10 @@ export function AppShell({
                 <DropdownMenuItem onClick={() => navigate("/dashboard")} className="cursor-pointer">
                   <LayoutDashboard className="mr-2 size-4" />
                   Projects
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => navigate("/settings")} className="cursor-pointer">
+                  <Settings className="mr-2 size-4" />
+                  Settings
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate("/")} className="cursor-pointer">
                   <Clapperboard className="mr-2 size-4" />

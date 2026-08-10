@@ -70,6 +70,7 @@ export default function ProjectPage() {
     api.clips.listClips,
     projectId ? { projectId: projectId as Id<"projects"> } : "skip",
   );
+  const templates = useQuery(api.templates.listTemplates);
   const aiStatus = useQuery(api.status.aiStatus);
 
   const renameProject = useMutation(api.projects.renameProject);
@@ -80,6 +81,7 @@ export default function ProjectPage() {
 
   const [selectedVideoId, setSelectedVideoId] = useState<Id<"videos"> | null>(null);
   const [strategy, setStrategy] = useState<ClipStrategy>("viral");
+  const [activeTemplateId, setActiveTemplateId] = useState<Id<"templates"> | null>(null);
   const [discovering, setDiscovering] = useState(false);
   const [transcribingId, setTranscribingId] = useState<Id<"videos"> | null>(null);
   const [editingName, setEditingName] = useState(false);
@@ -124,10 +126,14 @@ export default function ProjectPage() {
     if (!selectedVideo?.signals) return;
     setDiscovering(true);
     try {
+      const activeTemplate =
+        templates?.find((t) => t._id === activeTemplateId) ?? null;
       const candidates: ClipCandidate[] = discoverClips(
         selectedVideo.signals,
         selectedVideo.transcript ?? null,
-        strategy,
+        activeTemplate?.strategy ?? strategy,
+        10,
+        activeTemplate?.durationMs,
       );
       if (candidates.length === 0) {
         toast({
@@ -139,6 +145,8 @@ export default function ProjectPage() {
       const transcriptText = selectedVideo.transcript?.text ?? "";
       const created = await createClips({
         videoId: selectedVideo._id,
+        aspect: activeTemplate?.aspect,
+        captionsEnabled: activeTemplate?.captionsEnabled,
         clips: candidates.map((c) => ({
           startMs: c.startMs,
           endMs: c.endMs,
@@ -422,7 +430,42 @@ export default function ProjectPage() {
 
                   {selectedVideo.signals ? (
                     <div className="mt-4 flex flex-col gap-3">
-                      <StrategyPicker value={strategy} onChange={setStrategy} />
+                      <StrategyPicker
+                        value={strategy}
+                        onChange={(s) => {
+                          setStrategy(s);
+                          setActiveTemplateId(null);
+                        }}
+                      />
+                      {templates && templates.length > 0 && (
+                        <div className="flex flex-col gap-1.5">
+                          <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                            Apply template
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {templates.map((tpl) => (
+                              <button
+                                key={tpl._id}
+                                onClick={() => {
+                                  setActiveTemplateId(tpl._id);
+                                  setStrategy(tpl.strategy);
+                                }}
+                                className={cn(
+                                  "clay-press clay-chip flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all",
+                                  activeTemplateId === tpl._id
+                                    ? "bg-primary text-primary-foreground shadow-md"
+                                    : "bg-background hover:bg-accent",
+                                )}
+                                title={tpl.description ?? undefined}
+                              >
+                                <span>{tpl.emoji}</span>
+                                {tpl.name}
+                                <span className="opacity-70">· {tpl.durationMs / 1000}s</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       <Button
                         size="lg"
                         className="clay-press self-start gap-2"
@@ -435,6 +478,11 @@ export default function ProjectPage() {
                           <Zap className="size-5" />
                         )}
                         Find my best clips
+                        {activeTemplateId && (
+                          <span className="text-xs font-normal opacity-80">
+                            · {templates?.find((t) => t._id === activeTemplateId)?.name}
+                          </span>
+                        )}
                       </Button>
                     </div>
                   ) : (

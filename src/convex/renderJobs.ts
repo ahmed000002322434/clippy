@@ -90,3 +90,69 @@ export const listRenderJobs = query({
       .take(args.limit ?? 20);
   },
 });
+
+/**
+ * Recent completed exports across all projects, joined with clip / video /
+ * project metadata so the dashboard can show a real export history.
+ */
+export const listRecentExports = query({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const jobs = await ctx.db
+      .query("renderJobs")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(args.limit ?? 8);
+
+    const clipIds = [...new Set(jobs.map((j) => j.clipId))];
+    const clips = new Map(
+      await Promise.all(
+        clipIds.map(async (id) => {
+          const clip = await ctx.db.get(id);
+          return [id, clip] as const;
+        }),
+      ),
+    );
+    const projectIds = [...new Set(jobs.map((j) => j.projectId))];
+    const projects = new Map(
+      await Promise.all(
+        projectIds.map(async (id) => {
+          const p = await ctx.db.get(id);
+          return [id, p] as const;
+        }),
+      ),
+    );
+    const videoIds = [...new Set(clips.values())].filter(Boolean).map((c) => c!.videoId);
+    const videos = new Map(
+      await Promise.all(
+        videoIds.map(async (id) => {
+          const video = await ctx.db.get(id);
+          return [id, video] as const;
+        }),
+      ),
+    );
+
+    return Promise.all(
+      jobs.map(async (job) => {
+        const clip = clips.get(job.clipId);
+        const video = clip ? videos.get(clip.videoId) : null;
+        const project = projects.get(job.projectId);
+        const renderUrl = job.storageId
+          ? await ctx.storage.getUrl(job.storageId)
+          : null;
+        return {
+          ...job,
+          renderUrl,
+          clipStartMs: clip?.startMs ?? 0,
+          clipEndMs: clip?.endMs ?? 0,
+          clipAspect: clip?.aspect ?? "9:16",
+          videoName: video?.name ?? "Unknown video",
+          videoThumbnail: video?.thumbnail ?? null,
+          projectName: project?.name ?? "",
+        };
+      }),
+    );
+  },
+});

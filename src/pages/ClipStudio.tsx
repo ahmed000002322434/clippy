@@ -61,6 +61,7 @@ export default function ClipStudioPage() {
     clipId ? { clipId: clipId as Id<"clips"> } : "skip",
   );
   const updateClip = useMutation(api.clips.updateClip);
+  const brandKits = useQuery(api.brandKits.listBrandKits);
   const createRenderJob = useMutation(api.renderJobs.createRenderJob);
   const updateRenderJob = useMutation(api.renderJobs.updateRenderJob);
   const generateUploadUrl = useMutation(api.videos.generateUploadUrl);
@@ -73,6 +74,7 @@ export default function ClipStudioPage() {
   const [playing, setPlaying] = useState(false);
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [captionStyleId, setCaptionStyleId] = useState("pulse");
+  const [brandKitId, setBrandKitId] = useState<string | null>(null);
   const [selectedHook, setSelectedHook] = useState<string | null>(null);
   const [generatingHooks, setGeneratingHooks] = useState(false);
   const [positionOverride, setPositionOverride] = useState<CaptionStyle["position"]>("bottom");
@@ -100,9 +102,17 @@ export default function ClipStudioPage() {
     }
   }, [clip, startMs, endMs]);
 
+  // Brand kit accent color tints the emphasized caption words when active
+  const activeBrandKit = brandKits?.find((k) => k._id === brandKitId) ?? null;
   const captionStyle: CaptionStyle = useMemo(
-    () => ({ ...getCaptionStyle(captionStyleId), position: positionOverride }),
-    [captionStyleId, positionOverride],
+    () => ({
+      ...getCaptionStyle(captionStyleId),
+      position: positionOverride,
+      ...(activeBrandKit
+        ? { highlightColor: activeBrandKit.primaryColor }
+        : {}),
+    }),
+    [captionStyleId, positionOverride, activeBrandKit],
   );
 
   const captionLines = useMemo(
@@ -638,6 +648,47 @@ export default function ClipStudioPage() {
 
                 {/* CAPTIONS TAB */}
                 <TabsContent value="captions" className="flex flex-col gap-4 pt-4">
+                  {brandKits && brandKits.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Brand kit
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {brandKits.map((kit) => (
+                          <button
+                            key={kit._id}
+                            onClick={() => {
+                              const next = brandKitId === kit._id ? null : kit._id;
+                              setBrandKitId(next);
+                              if (next) {
+                                setCaptionStyleId(kit.captionStyle);
+                                setAspect(kit.aspect);
+                                setCaptionsEnabled(kit.captionsEnabled);
+                                void updateClip({
+                                  clipId: clip._id,
+                                  captionStyle: kit.captionStyle,
+                                  aspect: kit.aspect,
+                                  captionsEnabled: kit.captionsEnabled,
+                                });
+                              }
+                            }}
+                            className={cn(
+                              "clay-press clay-chip flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all",
+                              brandKitId === kit._id
+                                ? "bg-primary text-primary-foreground shadow-md"
+                                : "bg-background hover:bg-accent",
+                            )}
+                          >
+                            <span
+                              className="size-2.5 rounded-full"
+                              style={{ background: kit.primaryColor }}
+                            />
+                            {kit.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {!clip.transcript ? (
                     <div className="clay-inset rounded-2xl p-5 text-center">
                       <Mic className="mx-auto mb-2 size-6 text-muted-foreground" />

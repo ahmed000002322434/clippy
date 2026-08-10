@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { AppShell } from "@/components/AppShell";
 import { ScoreRing } from "@/components/studio/ScoreRing";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -14,20 +15,25 @@ import {
 } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
-import { formatBytes, formatTimestamp, timeAgo } from "@/lib/video/format";
+import { formatBytes, formatDuration, formatTimestamp, timeAgo } from "@/lib/video/format";
 import { useNavigate } from "react-router";
 import { useState } from "react";
 import {
   Archive,
+  CheckCircle2,
   ChevronRight,
   Clapperboard,
+  Download,
   Film,
   FolderPlus,
   HardDrive,
   KeyRound,
+  LayoutTemplate,
   Loader2,
+  Palette,
   Plus,
   Scissors,
+  Settings,
   Sparkles,
   Trash2,
   Zap,
@@ -47,6 +53,10 @@ export default function Dashboard() {
 
   const projects = useQuery(api.projects.listProjects, {});
   const recentClips = useQuery(api.clips.listRecentClips, { limit: 8 });
+  const recentExports = useQuery(api.renderJobs.listRecentExports, { limit: 6 });
+  const usage = useQuery(api.usage.usageStats);
+  const brandKits = useQuery(api.brandKits.listBrandKits);
+  const templates = useQuery(api.templates.listTemplates);
   const aiStatus = useQuery(api.status.aiStatus);
 
   const createProject = useMutation(api.projects.createProject);
@@ -85,25 +95,20 @@ export default function Dashboard() {
     },
     {
       label: "Clips generated",
-      value: (projects ?? []).reduce((acc, p) => acc + p.clipCount, 0),
+      value: usage?.clipCount ?? (projects ?? []).reduce((acc, p) => acc + p.clipCount, 0),
       icon: <Scissors className="size-5" />,
       tint: "clay-mint",
     },
     {
-      label: "Storage used",
-      value: formatBytes(user?.storageBytes ?? 0),
-      icon: <HardDrive className="size-5" />,
+      label: "Exports",
+      value: usage?.exportCount ?? 0,
+      icon: <Download className="size-5" />,
       tint: "clay-sky",
     },
     {
-      label: "AI providers",
-      value:
-        aiStatus === undefined
-          ? "…"
-          : aiStatus.transcriptionConfigured || aiStatus.llmConfigured
-            ? "Connected"
-            : "Not configured",
-      icon: <KeyRound className="size-5" />,
+      label: "Storage used",
+      value: formatBytes(usage?.storageBytes ?? user?.storageBytes ?? 0),
+      icon: <HardDrive className="size-5" />,
       tint: "clay-lilac",
     },
   ];
@@ -276,6 +281,113 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* brand kits + templates quick access */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <button
+            onClick={() => navigate("/settings")}
+            className="clay-press group flex items-center gap-3 p-4 text-left transition-all hover:shadow-xl"
+          >
+            <div className="clay clay-lilac flex size-11 shrink-0 items-center justify-center rounded-2xl transition-transform group-hover:scale-105">
+              <Palette className="size-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-bold">Brand kits</p>
+              <p className="text-xs text-muted-foreground">
+                {brandKits === undefined
+                  ? "Loading…"
+                  : brandKits.length === 0
+                    ? "Save a caption look for every clip"
+                    : `${brandKits.length} saved look${brandKits.length !== 1 ? "s" : ""}`}
+              </p>
+            </div>
+            <Settings className="size-4 shrink-0 text-muted-foreground" />
+          </button>
+          <button
+            onClick={() => navigate("/settings")}
+            className="clay-press group flex items-center gap-3 p-4 text-left transition-all hover:shadow-xl"
+          >
+            <div className="clay clay-peach flex size-11 shrink-0 items-center justify-center rounded-2xl transition-transform group-hover:scale-105">
+              <LayoutTemplate className="size-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-bold">Templates</p>
+              <p className="text-xs text-muted-foreground">
+                {templates === undefined
+                  ? "Loading…"
+                  : templates.length === 0
+                    ? "One-tap discovery recipes"
+                    : `${templates.length} saved recipe${templates.length !== 1 ? "s" : ""}`}
+              </p>
+            </div>
+            <Settings className="size-4 shrink-0 text-muted-foreground" />
+          </button>
+        </div>
+
+        {/* recent exports */}
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-bold">Recent exports</h2>
+            <button
+              className="text-xs font-semibold text-primary underline underline-offset-2"
+              onClick={() => navigate("/settings")}
+            >
+              Usage & limits
+            </button>
+          </div>
+          {recentExports === undefined ? (
+            <div className="flex h-32 items-center justify-center">
+              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : recentExports.length === 0 ? (
+            <div className="clay-inset rounded-3xl p-6 text-center text-sm text-muted-foreground">
+              Render a clip in the studio and your exports will appear here with a download link.
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {recentExports.map((job) => (
+                <div key={job._id} className="clay flex flex-col gap-3 p-3">
+                  <div className="flex items-center gap-3">
+                    {job.videoThumbnail ? (
+                      <img
+                        src={job.videoThumbnail}
+                        alt=""
+                        className="h-12 w-16 shrink-0 rounded-lg object-cover"
+                      />
+                    ) : (
+                      <div className="clay-inset flex h-12 w-16 shrink-0 items-center justify-center rounded-lg">
+                        <Film className="size-4 text-muted-foreground" />
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold">{job.videoName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatTimestamp(job.clipStartMs)} → {formatTimestamp(job.clipEndMs)} · {formatDuration(job.clipEndMs - job.clipStartMs)} · {job.clipAspect}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">{timeAgo(job.createdAt)}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary" className="clay-chip gap-1 text-[10px]">
+                      <CheckCircle2 className="size-3 text-emerald-600" /> {job.status}
+                    </Badge>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="clay-press ml-auto gap-1.5"
+                      asChild
+                    >
+                      <a href={job.renderUrl ?? "#"} download>
+                        <Download className="size-3.5" />
+                        Download
+                      </a>
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

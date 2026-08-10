@@ -174,6 +174,32 @@ const schema = defineSchema(
     })
       .index("by_user", ["userId", "createdAt"])
       .index("by_clip", ["clipId", "createdAt"]),
+
+    // Reusable output presets: caption look + default aspect per brand
+    brandKits: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      primaryColor: v.string(),
+      captionStyle: v.string(),
+      aspect: aspectRatioValidator,
+      captionsEnabled: v.boolean(),
+      createdAt: v.number(),
+    })
+      .index("by_user", ["userId", "createdAt"]),
+
+    // Reusable clip recipes: strategy + target duration + output shape
+    templates: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      emoji: v.string(),
+      description: v.optional(v.string()),
+      strategy: clipStrategyValidator,
+      durationMs: v.number(),
+      aspect: aspectRatioValidator,
+      captionsEnabled: v.boolean(),
+      createdAt: v.number(),
+    })
+      .index("by_user", ["userId", "createdAt"]),
   },
   {
     schemaValidation: false,

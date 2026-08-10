@@ -387,8 +387,19 @@ export function discoverClips(
   transcript: Transcript | null,
   strategyId: ClipStrategy,
   maxClips = 10,
+  durationOverrideMs?: number,
 ): ClipCandidate[] {
-  const strategy = getStrategy(strategyId);
+  const base = getStrategy(strategyId);
+  // A template can override the target length while keeping the strategy's
+  // scoring weights — widen the envelope around the requested duration.
+  const strategy: StrategyConfig = durationOverrideMs
+    ? {
+        ...base,
+        targetDurationMs: durationOverrideMs,
+        minDurationMs: Math.min(base.minDurationMs, Math.round(durationOverrideMs * 0.55)),
+        maxDurationMs: Math.max(base.maxDurationMs, Math.round(durationOverrideMs * 1.7)),
+      }
+    : base;
   const raw = generateCandidates(signals, strategy);
 
   const scored: ClipCandidate[] = raw.map((c) => {
