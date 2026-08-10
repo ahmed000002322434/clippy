@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { Link } from "react-router";
-import logo from "@/assets/logo.svg";
+import { ClippyLogo } from "@/components/ClippyLogo";
 import { ScoreRing } from "@/components/studio/ScoreRing";
 import { Button } from "@/components/ui/button";
 import {
@@ -109,7 +109,7 @@ export default function Landing() {
       <header className="px-4 pt-3 sm:px-6">
         <div className="clay mx-auto flex max-w-6xl items-center justify-between gap-3 rounded-full px-5 py-2.5">
           <div className="flex items-center gap-2">
-            <img src={logo} alt="Clippy" width={30} height={30} className="rounded-full" />
+            <ClippyLogo size={30} alt="" />
             <span className="text-base font-extrabold tracking-tight">Clippy</span>
           </div>
           <nav className="hidden items-center gap-1 md:flex">
@@ -333,7 +333,7 @@ export default function Landing() {
       <footer className="border-t border-border/60 px-4 py-8">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
-            <img src={logo} alt="" width={20} height={20} className="rounded-full" />
+            <ClippyLogo size={20} alt="" />
             <span className="font-bold text-foreground">Clippy</span>
             — AI video clipping platform
           </div>

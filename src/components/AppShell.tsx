@@ -14,8 +14,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ClippyLogo } from "@/components/ClippyLogo";
 import { Button } from "@/components/ui/button";
-import logo from "@/assets/logo.svg";
 import { useNavigate } from "react-router";
 import {
   Clapperboard,
@@ -55,8 +55,9 @@ export function AppShell({
             <button
               onClick={() => navigate("/dashboard")}
               className="clay-press flex items-center gap-2 rounded-full"
+              aria-label="Clippy — go to projects"
             >
-              <img src={logo} alt="Clippy" width={30} height={30} className="rounded-full" />
+              <ClippyLogo size={30} alt="" />
             </button>
             <span className="hidden sm:block text-sm font-bold tracking-tight">
               Clippy

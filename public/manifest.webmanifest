@@ -1,16 +1,16 @@
 {
-  "name": "freebuff.com application",
-  "short_name": "freebuff.com",
-  "description": "freebuff.com application",
+  "name": "Clippy — AI video clipping",
+  "short_name": "Clippy",
+  "description": "Turn long-form video into short-form clips with AI scoring, captions, hooks and export.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#000000",
+  "background_color": "#F6F0E6",
+  "theme_color": "#D97A4A",
   "icons": [
     {
-      "src": "/logo.png",
+      "src": "/clippy-logo.svg",
       "sizes": "any",
-      "type": "image/png",
+      "type": "image/svg+xml",
       "purpose": "any maskable"
     }
   ]
