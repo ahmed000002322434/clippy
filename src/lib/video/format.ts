@@ -42,6 +42,27 @@ export function formatBytes(bytes: number): string {
   return `${value >= 100 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
 }
 
+/** Human readable transfer speed, e.g. 24.6 MB/s. */
+export function formatSpeed(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "—";
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+  const i = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(bytesPerSecond) / Math.log(1024)),
+  );
+  const value = bytesPerSecond / 1024 ** i;
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
+
+/** Human readable remaining time, e.g. ~12s / ~2m. */
+export function formatEta(ms: number | null): string | null {
+  if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
+  const s = Math.ceil(ms / 1000);
+  if (s < 60) return `~${s}s`;
+  if (s < 3600) return `~${Math.round(s / 60)}m`;
+  return `~${Math.round(s / 3600)}h`;
+}
+
 /** Relative time like "2h ago" / "3d ago". */
 export function timeAgo(ts: number): string {
   const diff = Date.now() - ts;

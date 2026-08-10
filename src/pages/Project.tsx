@@ -3,8 +3,10 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { AppShell } from "@/components/AppShell";
 import { UploadZone } from "@/components/studio/UploadZone";
+import { MediaLibrary } from "@/components/studio/MediaLibrary";
 import { StrategyPicker } from "@/components/studio/StrategyPicker";
 import { ScoreRing } from "@/components/studio/ScoreRing";
+import { useIngestionRunner } from "@/hooks/use-ingestion-runner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -12,11 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { discoverClips } from "@/lib/video/scoring";
 import { hookForCandidate } from "@/lib/video/hooks";
 import type { ClipCandidate, ClipStrategy } from "@/lib/video/types";
-import {
-  formatBytes,
-  formatDuration,
-  formatTimestamp,
-} from "@/lib/video/format";
+import { formatDuration, formatTimestamp } from "@/lib/video/format";
 import { useNavigate, useParams } from "react-router";
 import { useState, useEffect } from "react";
 import {
@@ -24,9 +22,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   ChevronRight,
-  FileVideo,
   Loader2,
-  Link2,
   Mic,
   MoreHorizontal,
   Sparkles,
@@ -79,6 +75,10 @@ export default function ProjectPage() {
   const deleteProject = useMutation(api.projects.deleteProject);
   const transcribe = useAction(api.ai.transcribe);
   const createClips = useMutation(api.clips.createClips);
+
+  // Browser-side ingestion worker: picks up queued MEDIA_INGESTION jobs and
+  // runs the real processing pipeline (probe → analyze → proxy → thumbs).
+  useIngestionRunner(projectId ? (projectId as Id<"projects">) : null);
 
   const [selectedVideoId, setSelectedVideoId] = useState<Id<"videos"> | null>(null);
   const [strategy, setStrategy] = useState<ClipStrategy>("viral");
@@ -291,60 +291,12 @@ export default function ProjectPage() {
                   No videos yet. Drop a file above to get started.
                 </p>
               ) : (
-                <div className="flex flex-col gap-2">
-                  {videos.map((video) => (
-                    <button
-                      key={video._id}
-                      onClick={() => setSelectedVideoId(video._id)}
-                      className={cn(
-                        "clay-press flex w-full items-center gap-3 rounded-2xl border p-2 text-left transition-all",
-                        selectedVideo?._id === video._id
-                          ? "border-primary/60 bg-primary/5"
-                          : "border-transparent hover:bg-accent/60",
-                      )}
-                    >
-                      {video.thumbnail ? (
-                        <img
-                          src={video.thumbnail}
-                          alt=""
-                          className="h-14 w-20 shrink-0 rounded-xl object-cover"
-                        />
-                      ) : (
-                        <div className="clay-inset flex h-14 w-20 shrink-0 items-center justify-center rounded-xl">
-                          <FileVideo className="size-5 text-muted-foreground" />
-                        </div>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{video.name}</p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {video.durationMs ? formatDuration(video.durationMs) : "—"} · {formatBytes(video.size)}
-                        </p>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {video.status === "analyzed" ? (
-                            <Badge variant="secondary" className="clay-chip gap-1 text-[10px]">
-                              <CheckCircle2 className="size-3 text-emerald-600" /> Analyzed
-                            </Badge>
-                          ) : video.status === "failed" ? (
-                            <Badge variant="destructive" className="text-[10px]">Failed</Badge>
-                          ) : (
-                            <Badge variant="secondary" className="text-[10px]">Ready</Badge>
-                          )}
-                          {video.transcriptionStatus === "done" && (
-                            <Badge variant="secondary" className="clay-chip gap-1 text-[10px]">
-                              <Mic className="size-3 text-primary" /> Transcript
-                            </Badge>
-                          )}
-                          {video.source === "url" && (
-                            <Badge variant="secondary" className="clay-chip gap-1 text-[10px]">
-                              <Link2 className="size-3 text-primary" /> Imported
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-                      <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-                    </button>
-                  ))}
-                </div>
+                <MediaLibrary
+                  projectId={project._id}
+                  videos={videos}
+                  selectedVideoId={selectedVideo?._id ?? null}
+                  onSelect={(id) => setSelectedVideoId(id)}
+                />
               )}
             </div>
           </div>

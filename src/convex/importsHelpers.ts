@@ -38,6 +38,7 @@ export const createImportedVideo = internalMutation({
       source: args.source,
       status: "ready",
       transcriptionStatus: "none",
+      mediaStatus: "ready",
       createdAt: now,
     });
 

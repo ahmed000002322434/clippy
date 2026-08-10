@@ -1,13 +1,19 @@
-import { useAction, useMutation } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import { useRef, useState } from "react";
+import { UploadEngine } from "@/lib/upload/engine";
+import type { UploadTask } from "@/lib/upload/engine";
+import { createStorageProvider } from "@/lib/storage/convex";
+import type { ConvexUploadMutations } from "@/lib/storage/convex";
+import { validateVideoFileClient } from "@/lib/upload/validate";
 import { analyzeVideoFile } from "@/lib/video/analyze";
-import { uploadToStorage, validateVideoFile } from "@/lib/upload";
-import { formatBytes } from "@/lib/video/format";
+import { formatBytes, formatEta, formatSpeed } from "@/lib/video/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useState, useRef } from "react";
+import { cn } from "@/lib/utils";
 import {
+  AlertTriangle,
   CheckCircle2,
   Cloud,
   FileVideo,
@@ -20,22 +26,6 @@ import {
   X,
   Youtube,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-
-type Phase = "analyzing" | "uploading" | "creating" | "done" | "error";
-
-interface Task {
-  id: string;
-  file: File;
-  phase: Phase;
-  analysisPct: number;
-  uploadPct: number;
-  error?: string;
-  videoId?: Id<"videos">;
-  controller: AbortController;
-}
-
-let taskCounter = 0;
 
 const PROVIDERS = [
   {
@@ -68,6 +58,40 @@ const PROVIDERS = [
   },
 ];
 
+/** Sessions that can be resumed after a refresh (created/uploading/failed). */
+function isRecoverable(s: {
+  status: string;
+  videoId?: string;
+  uploadedBytes: number;
+  size: number;
+}): boolean {
+  return (
+    !s.videoId &&
+    (s.status === "created" || s.status === "uploading" || s.status === "failed")
+  );
+}
+
+function phaseLabel(task: UploadTask): string {
+  switch (task.phase) {
+    case "validating":
+      return "Checking file…";
+    case "creating-session":
+      return "Starting upload…";
+    case "uploading":
+      return `${formatBytes(task.bytesUploaded)} / ${formatBytes(task.bytesTotal)} · ${formatSpeed(task.speedBps)}${
+        formatEta(task.etaMs) ? ` · ${formatEta(task.etaMs)} left` : ""
+      }`;
+    case "finalizing":
+      return "Saving…";
+    case "done":
+      return "Uploaded — processing starts automatically";
+    case "cancelled":
+      return "Cancelled";
+    case "error":
+      return task.error ?? "Upload failed";
+  }
+}
+
 export function UploadZone({
   projectId,
   onUploaded,
@@ -75,14 +99,80 @@ export function UploadZone({
   projectId: Id<"projects">;
   onUploaded?: (videoId: Id<"videos">) => void;
 }) {
-  const generateUploadUrl = useMutation(api.videos.generateUploadUrl);
-  const createVideo = useMutation(api.videos.createVideo);
+  const createUploadSession = useMutation(api.uploads.createUploadSession);
+  const markUploading = useMutation(api.uploads.markUploading);
+  const getFreshUploadUrl = useMutation(api.uploads.getFreshUploadUrl);
+  const updateUploadProgress = useMutation(api.uploads.updateUploadProgress);
+  const completeUploadSession = useMutation(api.uploads.completeUploadSession);
+  const failUploadSession = useMutation(api.uploads.failUploadSession);
+  const cancelUploadSession = useMutation(api.uploads.cancelUploadSession);
   const updateVideo = useMutation(api.videos.updateVideo);
   const importFromUrl = useAction(api.imports.importFromUrl);
 
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [tasks, setTasks] = useState<UploadTask[]>([]);
+  const [rejected, setRejected] = useState<{ id: string; name: string; error: string }[]>([]);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const resumeInputRef = useRef<HTMLInputElement>(null);
+  const onUploadedRef = useRef(onUploaded);
+  onUploadedRef.current = onUploaded;
+
+  const sessions = useQuery(api.uploads.listUploadSessions, { projectId });
+  const recoverable = (sessions ?? []).filter(isRecoverable);
+
+  // Build the provider once per render; the engine follows it.
+  const mutations: ConvexUploadMutations = {
+    createUploadSession: (a) => createUploadSession(a),
+    markUploading: (a) => markUploading(a),
+    getFreshUploadUrl: (a) => getFreshUploadUrl(a),
+    updateUploadProgress: (a) => updateUploadProgress(a),
+    completeUploadSession: (a) => completeUploadSession(a),
+    failUploadSession: (a) => failUploadSession(a),
+    cancelUploadSession: (a) => cancelUploadSession(a),
+  };
+  const provider = createStorageProvider(mutations);
+
+  const engineRef = useRef<UploadEngine | null>(null);
+  if (!engineRef.current || engineRef.current.projectId !== projectId) {
+    engineRef.current?.dispose();
+    const engine = new UploadEngine(provider, projectId, {
+      onUpdate: (ts) => setTasks([...ts]),
+      onCompleted: (_task, videoId) =>
+        onUploadedRef.current?.(videoId as Id<"videos">),
+    });
+    engineRef.current = engine;
+  }
+
+  const addFiles = (files: FileList | File[]) => {
+    const list = Array.from(files);
+    const rejectedBatch: typeof rejected = [];
+    for (const file of list) {
+      const validation = validateVideoFileClient(file);
+      if (!validation.ok) {
+        rejectedBatch.push({
+          id: `r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          name: file.name,
+          error: validation.error ?? "Unsupported file",
+        });
+        continue;
+      }
+      // Session recovery: if a recoverable session matches this filename,
+      // resume that session instead of creating a fresh one.
+      const match = recoverable.find(
+        (s) => s.filename.toLowerCase() === file.name.toLowerCase(),
+      );
+      engineRef.current?.addFile(file, match?._id ?? null);
+    }
+    if (rejectedBatch.length) setRejected((prev) => [...prev, ...rejectedBatch]);
+  };
+
+  const resumeTargetRef = useRef<string | null>(null);
+  const resumeFor = (sessionId: string) => {
+    // Re-pick the file; the picker matches it against the recoverable session
+    // so the upload continues on the same session (statuses preserved).
+    resumeTargetRef.current = sessionId;
+    resumeInputRef.current?.click();
+  };
 
   // import-from-URL state
   const [importOpen, setImportOpen] = useState(false);
@@ -92,128 +182,6 @@ export function UploadZone({
   const [importPct, setImportPct] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
   const importAbortRef = useRef<AbortController | null>(null);
-
-  const patchTask = (id: string, patch: Partial<Task>) => {
-    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-  };
-
-  const addFiles = (files: FileList | File[]) => {
-    const newTasks: Task[] = [];
-    for (const file of Array.from(files)) {
-      const validation = validateVideoFile(file);
-      if (!validation.ok) {
-        // Surface invalid files as error tasks
-        newTasks.push({
-          id: `t${++taskCounter}`,
-          file,
-          phase: "error",
-          analysisPct: 0,
-          uploadPct: 0,
-          error: validation.error,
-          controller: new AbortController(),
-        });
-        continue;
-      }
-      const task: Task = {
-        id: `t${++taskCounter}`,
-        file,
-        phase: "analyzing",
-        analysisPct: 0,
-        uploadPct: 0,
-        controller: new AbortController(),
-      };
-      newTasks.push(task);
-      void runTask(task);
-    }
-    setTasks((prev) => [...prev, ...newTasks]);
-  };
-
-  const runTask = async (task: Task) => {
-    const signal = task.controller.signal;
-    try {
-      // Start upload immediately (independent of analysis)
-      const uploadPromise = uploadToStorage(
-        task.file,
-        generateUploadUrl,
-        {
-          onProgress: (pct) => patchTask(task.id, { uploadPct: pct }),
-          signal,
-        },
-      ).catch((err) => {
-        throw err;
-      });
-
-      // Analyze in parallel (real signal processing)
-      let signals: Awaited<ReturnType<typeof analyzeVideoFile>> | null = null;
-      try {
-        signals = await analyzeVideoFile(task.file, (p) => {
-          patchTask(task.id, {
-            analysisPct:
-              p.stage === "reading"
-                ? Math.round(p.pct * 0.25)
-                : p.stage === "audio"
-                  ? Math.round(25 + p.pct * 0.35)
-                  : Math.round(60 + p.pct * 0.4),
-          });
-        }, signal);
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") throw err;
-        // Analysis failed but upload may still succeed — continue without signals
-        signals = null;
-      }
-
-      const { storageId } = await uploadPromise;
-      patchTask(task.id, { phase: "creating", analysisPct: 100, uploadPct: 100 });
-      const storageIdTyped = storageId as Id<"_storage">;
-
-      const videoId = await createVideo({
-        projectId,
-        name: task.file.name.replace(/\.[^.]+$/, ""),
-        mimeType: task.file.type || "video/mp4",
-        size: task.file.size,
-        storageId: storageIdTyped,
-        durationMs: signals?.meta.durationMs,
-        width: signals?.meta.width,
-        height: signals?.meta.height,
-        thumbnail: signals?.meta.thumbnail,
-      });
-
-      if (signals) {
-        await updateVideo({
-          videoId,
-          signals: signals.signals,
-          analyzedAt: Date.now(),
-          status: "analyzed",
-        });
-      }
-
-      patchTask(task.id, { phase: "done", videoId });
-      onUploaded?.(videoId);
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        patchTask(task.id, { phase: "error", error: "Cancelled" });
-      } else {
-        patchTask(task.id, {
-          phase: "error",
-          error: err instanceof Error ? err.message : "Upload failed",
-        });
-      }
-    }
-  };
-
-  const retryTask = (task: Task) => {
-    patchTask(task.id, { phase: "analyzing", analysisPct: 0, uploadPct: 0, error: undefined });
-    task.controller = new AbortController();
-    void runTask(task);
-  };
-
-  const cancelTask = (task: Task) => {
-    task.controller.abort();
-  };
-
-  const removeTask = (id: string) => {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
-  };
 
   const runImport = async () => {
     const url = importUrl.trim();
@@ -283,9 +251,13 @@ export function UploadZone({
     }
   };
 
-  const activeCount = tasks.filter(
-    (t) => t.phase === "analyzing" || t.phase === "uploading" || t.phase === "creating",
-  ).length;
+  const activeTasks = tasks.filter(
+    (t) => t.phase !== "done" && t.phase !== "error" && t.phase !== "cancelled",
+  );
+  const totalBytes = tasks.reduce((a, t) => a + t.bytesTotal, 0);
+  const uploadedBytes = tasks.reduce((a, t) => a + t.bytesUploaded, 0);
+  const overallPct =
+    totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
 
   return (
     <div className="flex flex-col gap-3">
@@ -318,7 +290,7 @@ export function UploadZone({
           Drop a long-form video here, or <span className="text-primary underline underline-offset-2">browse</span>
         </p>
         <p className="text-xs text-muted-foreground">
-          MP4 · MOV · WebM — up to 2GB. Analysis runs locally in your browser.
+          MP4 · MOV · WebM — up to 2GB. Uploads stream straight to storage; real progress, pause &amp; resume.
         </p>
         <input
           ref={inputRef}
@@ -331,7 +303,68 @@ export function UploadZone({
             e.target.value = "";
           }}
         />
+        <input
+          ref={resumeInputRef}
+          type="file"
+          accept="video/*"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            const sessionId = resumeTargetRef.current;
+            resumeTargetRef.current = null;
+            if (!file || !sessionId) return;
+            const session = recoverable.find((s) => s._id === sessionId);
+            if (!session) return;
+            if (session.filename.toLowerCase() !== file.name.toLowerCase()) {
+              setRejected((prev) => [
+                ...prev,
+                {
+                  id: `r-${Date.now()}`,
+                  name: file.name,
+                  error: "Pick the same file to resume — or drop it again to start fresh.",
+                },
+              ]);
+              return;
+            }
+            engineRef.current?.addFile(file, sessionId);
+          }}
+        />
       </div>
+
+      {/* interrupted-session recovery */}
+      {recoverable.length > 0 && (
+        <div className="clay flex flex-col gap-2 p-3">
+          <p className="flex items-center gap-1.5 text-xs font-bold text-amber-600 dark:text-amber-300">
+            <AlertTriangle className="size-3.5" />
+            {recoverable.length} upload{recoverable.length > 1 ? "s were" : " was"} interrupted
+          </p>
+          {recoverable.map((s) => (
+            <div
+              key={s._id}
+              className="clay-inset flex items-center gap-2 rounded-xl px-3 py-2"
+            >
+              <FileVideo className="size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium">{s.filename}</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {formatBytes(s.uploadedBytes)} / {formatBytes(s.size)} transferred
+                  {s.status === "failed" && " · failed, retryable"}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="clay-press shrink-0"
+                onClick={() => resumeFor(s._id)}
+              >
+                <RefreshCcw className="size-3.5" />
+                Resume
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* import from URL */}
       {importOpen ? (
@@ -439,94 +472,169 @@ export function UploadZone({
         </button>
       )}
 
-      {tasks.length > 0 && (
-        <div className="flex flex-col gap-2">
-          {tasks.map((task) => {
-            const combined =
-              task.phase === "creating" || task.phase === "done"
-                ? 100
-                : Math.round(task.analysisPct * 0.5 + task.uploadPct * 0.5);
-            return (
-              <div key={task.id} className="clay flex items-center gap-3 px-4 py-3">
-                <div className="clay-inset flex size-10 shrink-0 items-center justify-center rounded-xl">
-                  {task.phase === "done" ? (
-                    <CheckCircle2 className="size-5 text-emerald-600 dark:text-emerald-300" />
-                  ) : task.phase === "error" ? (
-                    <XCircle className="size-5 text-destructive" />
-                  ) : (
-                    <FileVideo className="size-5 text-primary" />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-medium">{task.file.name}</p>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {formatBytes(task.file.size)}
-                    </span>
-                  </div>
-                  {task.phase === "error" ? (
-                    <p className="mt-1 text-xs text-destructive">{task.error}</p>
-                  ) : task.phase === "done" ? (
-                    <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-300">
-                      Ready — analysis & upload complete
-                    </p>
-                  ) : (
-                    <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
-                      <div
-                        className="h-full rounded-full bg-primary transition-all duration-200"
-                        style={{ width: `${combined}%` }}
-                      />
-                    </div>
-                  )}
-                  {task.phase !== "error" && task.phase !== "done" && (
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      {task.phase === "analyzing" && "Analyzing audio & scenes…"}
-                      {task.phase === "uploading" && `Uploading ${task.uploadPct}%`}
-                      {task.phase === "creating" && "Saving…"}
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-1">
-                  {task.phase === "error" && task.error !== "Cancelled" && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => retryTask(task)}
-                      title="Retry"
-                    >
-                      <RefreshCcw className="size-4" />
-                    </Button>
-                  )}
-                  {(task.phase === "analyzing" ||
-                    task.phase === "uploading" ||
-                    task.phase === "creating") && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => cancelTask(task)}
-                      title="Cancel"
-                    >
-                      <X className="size-4" />
-                    </Button>
-                  )}
-                  {(task.phase === "done" || task.phase === "error") && (
-                    <Button variant="ghost" size="icon-sm" onClick={() => removeTask(task.id)} title="Dismiss">
-                      <X className="size-4" />
-                    </Button>
-                  )}
-                  {task.phase === "creating" && (
-                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                  )}
-                </div>
+      {/* rejected files */}
+      {rejected.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {rejected.map((r) => (
+            <div
+              key={r.id}
+              className="clay flex items-center gap-2 rounded-xl px-3 py-2 text-xs"
+            >
+              <XCircle className="size-4 shrink-0 text-destructive" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium">{r.name}</p>
+                <p className="text-destructive">{r.error}</p>
               </div>
-            );
-          })}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setRejected((prev) => prev.filter((x) => x.id !== r.id))}
+                title="Dismiss"
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+          ))}
         </div>
       )}
-      {activeCount > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {activeCount} file{activeCount > 1 ? "s" : ""} processing in parallel
-        </p>
+
+      {/* upload tasks */}
+      {tasks.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {tasks.map((task) => (
+            <div key={task.id} className="clay flex items-center gap-3 px-4 py-3">
+              <div className="clay-inset flex size-10 shrink-0 items-center justify-center rounded-xl">
+                {task.phase === "done" ? (
+                  <CheckCircle2 className="size-5 text-emerald-600 dark:text-emerald-300" />
+                ) : task.phase === "error" ? (
+                  <XCircle className="size-5 text-destructive" />
+                ) : task.phase === "cancelled" ? (
+                  <XCircle className="size-5 text-muted-foreground" />
+                ) : (
+                  <FileVideo className="size-5 text-primary" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate text-sm font-medium">{task.file.name}</p>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {formatBytes(task.file.size)}
+                  </span>
+                </div>
+                {task.phase === "error" || task.phase === "cancelled" ? (
+                  <p className="mt-1 text-xs text-destructive">
+                    {task.error}
+                    {task.errorClass === "retryable" && " — you can retry."}
+                    {task.errorClass === "user-action" &&
+                      task.phase === "cancelled" &&
+                      " You can resume from the interrupted-uploads list."}
+                  </p>
+                ) : task.phase === "done" ? (
+                  <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-300">
+                    {phaseLabel(task)}
+                  </p>
+                ) : (
+                  <>
+                    <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-all duration-200",
+                          task.phase === "finalizing"
+                            ? "bg-emerald-500"
+                            : "bg-primary",
+                        )}
+                        style={{ width: `${task.pct}%` }}
+                      />
+                    </div>
+                    <p className="mt-0.5 flex items-center justify-between text-[10px] text-muted-foreground">
+                      <span className="truncate">{phaseLabel(task)}</span>
+                      <span className="shrink-0 tabular-nums">{task.pct}%</span>
+                    </p>
+                  </>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                {task.phase === "error" && task.errorClass !== "user-action" && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => engineRef.current?.retry(task.id)}
+                    title="Retry upload"
+                  >
+                    <RefreshCcw className="size-4" />
+                  </Button>
+                )}
+                {task.phase === "error" && task.errorClass === "user-action" && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => engineRef.current?.remove(task.id)}
+                    title="Dismiss"
+                  >
+                    <X className="size-4" />
+                  </Button>
+                )}
+                {(task.phase === "validating" ||
+                  task.phase === "creating-session" ||
+                  task.phase === "uploading" ||
+                  task.phase === "finalizing") && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => engineRef.current?.cancel(task.id)}
+                    title="Cancel upload"
+                  >
+                    <X className="size-4" />
+                  </Button>
+                )}
+                {task.phase === "cancelled" && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => engineRef.current?.retry(task.id)}
+                    title="Try again"
+                  >
+                    <RefreshCcw className="size-4" />
+                  </Button>
+                )}
+                {task.phase === "done" && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => engineRef.current?.remove(task.id)}
+                    title="Dismiss"
+                  >
+                    <X className="size-4" />
+                  </Button>
+                )}
+                {task.phase === "finalizing" && (
+                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* aggregate progress */}
+      {activeTasks.length > 0 && (
+        <div className="clay-inset flex flex-col gap-1.5 rounded-2xl p-3">
+          <div className="flex items-center justify-between text-[11px] font-semibold">
+            <span>
+              {activeTasks.length} upload{activeTasks.length > 1 ? "s" : ""} in progress
+            </span>
+            <span className="tabular-nums">
+              {formatBytes(uploadedBytes)} / {formatBytes(totalBytes)}
+            </span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+            <div
+              className="h-full rounded-full bg-primary transition-all duration-200"
+              style={{ width: `${overallPct}%` }}
+            />
+          </div>
+          <p className="text-[10px] text-muted-foreground">{overallPct}% overall</p>
+        </div>
       )}
     </div>
   );

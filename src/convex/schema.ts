@@ -60,6 +60,55 @@ export const aspectRatioValidator = v.union(
 );
 export type AspectRatio = Infer<typeof aspectRatioValidator>;
 
+// --- Phase 2: ingestion / processing statuses ----------------------------
+
+export const UPLOAD_SESSION_STATUS = v.union(
+  v.literal("created"),
+  v.literal("uploading"),
+  v.literal("processing"),
+  v.literal("completed"),
+  v.literal("failed"),
+  v.literal("cancelled"),
+);
+export type UploadSessionStatus = Infer<typeof UPLOAD_SESSION_STATUS>;
+
+export const JOB_STATUS = v.union(
+  v.literal("queued"),
+  v.literal("processing"),
+  v.literal("completed"),
+  v.literal("failed"),
+  v.literal("cancelled"),
+  v.literal("retrying"),
+);
+export type JobStatus = Infer<typeof JOB_STATUS>;
+
+export const JOB_TYPES = [
+  "MEDIA_INGESTION",
+  "PROXY_GENERATION",
+  "THUMBNAIL_GENERATION",
+  "WAVEFORM_GENERATION",
+  "VIDEO_RENDER",
+  "EXPORT",
+] as const;
+export const jobTypeValidator = v.union(...JOB_TYPES.map((t) => v.literal(t)));
+export type JobType = Infer<typeof jobTypeValidator>;
+
+/** Error classification drives retry decisions. */
+export const ERROR_CLASS = v.union(
+  v.literal("retryable"),
+  v.literal("permanent"),
+  v.literal("user-action"),
+);
+export type ErrorClass = Infer<typeof ERROR_CLASS>;
+
+export const MEDIA_ASSET_STATUS = v.union(
+  v.literal("pending"),
+  v.literal("processing"),
+  v.literal("ready"),
+  v.literal("failed"),
+);
+export type MediaAssetStatus = Infer<typeof MEDIA_ASSET_STATUS>;
+
 export const CLIP_STRATEGIES = [
   "viral",
   "educational",
@@ -132,9 +181,71 @@ const schema = defineSchema(
       transcriptionError: v.optional(v.string()),
       analyzedAt: v.optional(v.number()),
       createdAt: v.number(),
+      // --- Phase 2: normalized media metadata (probe result) ---
+      mediaInfo: v.optional(v.any()),
+      // Media-asset processing lifecycle (distinct from upload status)
+      mediaStatus: v.optional(MEDIA_ASSET_STATUS),
+      mediaError: v.optional(v.string()),
+      // Lightweight proxy for browser playback/editing (re-encoded)
+      proxyStorageId: v.optional(v.id("_storage")),
+      proxyUrl: v.optional(v.string()),
+      // Compact waveform peaks (derived from real audio decode)
+      waveform: v.optional(v.any()),
+      // Sampled timeline thumbnails (compact data-urls)
+      timelineThumbnails: v.optional(v.array(v.string())),
     })
       .index("by_project", ["projectId", "createdAt"])
       .index("by_user", ["userId", "createdAt"]),
+
+    // Persistent upload sessions — recoverable across browser refreshes.
+    uploadSessions: defineTable({
+      userId: v.id("users"),
+      projectId: v.id("projects"),
+      filename: v.string(),
+      mimeType: v.string(),
+      size: v.number(),
+      uploadedBytes: v.number(),
+      status: UPLOAD_SESSION_STATUS,
+      error: v.optional(v.string()),
+      errorClass: v.optional(ERROR_CLASS),
+      storageId: v.optional(v.id("_storage")),
+      videoId: v.optional(v.id("videos")),
+      attempts: v.number(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+      completedAt: v.optional(v.number()),
+    })
+      .index("by_user", ["userId", "createdAt"])
+      .index("by_project", ["projectId", "createdAt"])
+      .index("by_user_status", ["userId", "status", "updatedAt"]),
+
+    // Generalized processing job system (ingestion, proxy, render, export…)
+    processingJobs: defineTable({
+      userId: v.id("users"),
+      projectId: v.id("projects"),
+      assetId: v.optional(v.id("videos")),
+      type: jobTypeValidator,
+      status: JOB_STATUS,
+      stage: v.optional(v.string()),
+      progress: v.number(),
+      attempts: v.number(),
+      maxAttempts: v.number(),
+      error: v.optional(v.string()),
+      errorClass: v.optional(ERROR_CLASS),
+      // Deterministic idempotency key (e.g. `${videoId}:MEDIA_INGESTION`)
+      idempotencyKey: v.string(),
+      // Real worker output (metadata, storage ids, urls…) once completed
+      result: v.optional(v.any()),
+      createdAt: v.number(),
+      startedAt: v.optional(v.number()),
+      finishedAt: v.optional(v.number()),
+      updatedAt: v.number(),
+    })
+      .index("by_user", ["userId", "createdAt"])
+      .index("by_project", ["projectId", "createdAt"])
+      .index("by_asset", ["assetId", "createdAt"])
+      .index("by_status", ["status", "updatedAt"])
+      .index("by_idempotency", ["idempotencyKey"]),
 
     clips: defineTable({
       projectId: v.id("projects"),

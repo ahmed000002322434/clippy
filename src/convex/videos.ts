@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
 import { TRANSCRIPTION_STATUS, VIDEO_STATUS } from "./schema";
 
 const NOW = () => Date.now();
@@ -118,6 +119,24 @@ export const setTranscript = mutation({
   },
 });
 
+export const renameVideo = mutation({
+  args: { videoId: v.id("videos"), name: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not authenticated");
+    const video = await ctx.db.get(args.videoId);
+    if (!video || video.userId !== userId) throw new Error("Forbidden");
+    const trimmed = args.name.trim();
+    if (!trimmed || trimmed.length > 120) {
+      throw new Error("Name must be between 1 and 120 characters.");
+    }
+    // Display-only name — never used as a storage path.
+    await ctx.db.patch(args.videoId, { name: trimmed.slice(0, 120) });
+    const project = await ctx.db.get(video.projectId);
+    if (project) await ctx.db.patch(project._id, { updatedAt: NOW() });
+  },
+});
+
 export const deleteVideo = mutation({
   args: { videoId: v.id("videos") },
   handler: async (ctx, args) => {
@@ -148,13 +167,29 @@ export const deleteVideo = mutation({
       await ctx.db.delete(clip._id);
     }
 
-    if (video.storageId) {
+    // Remove all derived processing outputs (proxy) + job records + sessions.
+    const storageIds = [video.storageId, video.proxyStorageId].filter(
+      (id): id is Id<"_storage"> => Boolean(id),
+    );
+    for (const storageId of storageIds) {
       try {
-        await ctx.storage.delete(video.storageId);
+        await ctx.storage.delete(storageId);
       } catch {
-        // ignore
+        // ignore storage errors during cascade delete
       }
     }
+    const jobs = await ctx.db
+      .query("processingJobs")
+      .withIndex("by_asset", (q) => q.eq("assetId", args.videoId))
+      .collect();
+    for (const job of jobs) await ctx.db.delete(job._id);
+    const sessions = await ctx.db
+      .query("uploadSessions")
+      .withIndex("by_project", (q) => q.eq("projectId", video.projectId))
+      .filter((q) => q.eq(q.field("videoId"), args.videoId))
+      .collect();
+    for (const s of sessions) await ctx.db.delete(s._id);
+
     await ctx.db.delete(args.videoId);
 
     const user = await ctx.db.get(userId);
