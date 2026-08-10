@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 200" role="img" aria-label="Clippy">
+  <defs>
+    <linearGradient id="clippyBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8C5F40"/>
+      <stop offset="0.45" stop-color="#71482C"/>
+      <stop offset="1" stop-color="#5A3921"/>
+    </linearGradient>
+    <linearGradient id="clippyEye" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FBEAD0"/>
+      <stop offset="1" stop-color="#E8C493"/>
+    </linearGradient>
+    <linearGradient id="clippyPink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F494A2"/>
+      <stop offset="1" stop-color="#DC5870"/>
+    </linearGradient>
+    <linearGradient id="clippyTeal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#58CEBD"/>
+      <stop offset="1" stop-color="#249E8E"/>
+    </linearGradient>
+    <linearGradient id="clippySilver" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F3F5F8"/>
+      <stop offset="1" stop-color="#C2C9D2"/>
+    </linearGradient>
+    <linearGradient id="clippyOrange" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FF9B67"/>
+      <stop offset="1" stop-color="#ED6C33"/>
+    </linearGradient>
+  </defs>
+
+  <!-- soft ground shadow -->
+  <ellipse cx="110" cy="156" rx="82" ry="10" fill="#4A2E1A" opacity="0.16"/>
+
+  <!-- antennae -->
+  <g transform="rotate(-14 72 44)">
+    <rect x="64" y="18" width="16" height="42" rx="8" fill="url(#clippyPink)"/>
+    <ellipse cx="72" cy="24" rx="5.5" ry="3" fill="#FFFFFF" opacity="0.55"/>
+  </g>
+  <rect x="102" y="12" width="16" height="46" rx="8" fill="url(#clippyTeal)"/>
+  <ellipse cx="110" cy="19" rx="5.5" ry="3" fill="#FFFFFF" opacity="0.55"/>
+  <g transform="rotate(14 148 44)">
+    <rect x="140" y="18" width="16" height="42" rx="8" fill="url(#clippySilver)"/>
+    <ellipse cx="148" cy="24" rx="5.5" ry="3" fill="#FFFFFF" opacity="0.8"/>
+  </g>
+
+  <!-- main body -->
+  <rect x="32" y="58" width="156" height="92" rx="36" fill="url(#clippyBody)"/>
+  <!-- top highlight -->
+  <ellipse cx="110" cy="76" rx="54" ry="12" fill="#FFFFFF" opacity="0.18"/>
+  <!-- bottom inner shade -->
+  <ellipse cx="110" cy="136" rx="58" ry="11" fill="#3A2212" opacity="0.22"/>
+
+  <!-- eyes -->
+  <rect x="78" y="80" width="20" height="46" rx="10" fill="url(#clippyEye)"/>
+  <rect x="122" y="80" width="20" height="46" rx="10" fill="url(#clippyEye)"/>
+  <ellipse cx="88" cy="118" rx="8" ry="4.5" fill="#B98A57" opacity="0.35"/>
+  <ellipse cx="132" cy="118" rx="8" ry="4.5" fill="#B98A57" opacity="0.35"/>
+
+  <!-- side play-button attachment -->
+  <path d="M180 86 L214 99 Q222 104 214 109 L180 122 Q173 104 180 86 Z" fill="url(#clippyOrange)"/>
+  <path d="M180 90 L208 101 Q213 104 208 107 L180 118 Q177 104 180 90 Z" fill="#FFFFFF" opacity="0.18"/>
+</svg>
